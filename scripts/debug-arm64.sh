@@ -1,4 +1,5 @@
 #!/usr/bin/env sh
+# 建置 ARM64 核心並讓 QEMU 等待除錯器連線。
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 kernel=$($root/scripts/build-arm64.sh | tail -n 1)

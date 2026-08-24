@@ -1,4 +1,5 @@
 #!/usr/bin/env sh
+# 建置 x86_64 映像並讓 QEMU 等待除錯器連線。
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 image=$($root/scripts/build-x86_64.sh | tail -n 1)

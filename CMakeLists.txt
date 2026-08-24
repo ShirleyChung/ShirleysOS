@@ -1,3 +1,4 @@
+# 宣告最低 CMake 版本與本專案使用的語言。
 cmake_minimum_required(VERSION 3.20)
 project(ShirleyOS LANGUAGES C CXX ASM)
 if(NOT SHIRLEY_TARGET)
@@ -8,11 +9,13 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_program(SHIRLEY_LLD ld.lld REQUIRED)
 find_program(SHIRLEY_OBJCOPY llvm-objcopy REQUIRED)
 if(SHIRLEY_TARGET STREQUAL arm64)
+  # ARM64 直接連結核心 ELF。
   add_executable(shirley-kernel kernel/kernel_main.cpp arch/arm64/arch.cpp arch/arm64/entry.S platform/qemu_arm64/console.cpp)
   target_include_directories(shirley-kernel PRIVATE kernel/freestanding include)
   target_compile_options(shirley-kernel PRIVATE -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fno-pic)
   target_link_options(shirley-kernel PRIVATE -nostdlib -static -fuse-ld=lld -Wl,-T,${CMAKE_SOURCE_DIR}/platform/qemu_arm64/kernel.ld -Wl,--build-id=none)
 elseif(SHIRLEY_TARGET STREQUAL x86_64)
+  # x86_64 先建立核心與開機程式，再組合成磁碟映像。
   add_library(shirley-kernel-objects OBJECT kernel/kernel_main.cpp arch/x86_64/arch.cpp platform/qemu_x86_64/console.cpp)
   target_include_directories(shirley-kernel-objects PRIVATE kernel/freestanding include)
   target_compile_options(shirley-kernel-objects PRIVATE -target x86_64-none-elf -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fno-pic -mno-red-zone)
@@ -37,6 +40,7 @@ elseif(SHIRLEY_TARGET STREQUAL x86_64)
     DEPENDS shirley-boot shirley-kernel)
   add_custom_target(shirley-disk ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/shirley-x86_64.img)
 else()
+  # 主機目標只建置可測試的核心記憶體元件。
   add_library(shirley-kernel-core STATIC kernel/memory/page_allocator.cpp)
   target_include_directories(shirley-kernel-core PUBLIC include)
   add_executable(shirley-host-smoke tests/host_smoke.cpp)

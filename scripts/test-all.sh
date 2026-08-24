@@ -1,9 +1,11 @@
 #!/usr/bin/env sh
+# 建置兩個平台並以 QEMU 執行整合啟動測試。
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 echo "ShirleyOS Integration Tests"
 command -v qemu-system-aarch64 >/dev/null 2>&1 || { echo "Missing qemu-system-aarch64. Install with: brew install qemu" >&2; exit 1; }
 command -v qemu-system-x86_64 >/dev/null 2>&1 || { echo "Missing qemu-system-x86_64. Install with: brew install qemu" >&2; exit 1; }
+# 逐一建置目標，啟動後確認核心問候訊息出現。
 for target in arm64 x86_64; do
   printf "[%s]  build ... " "$target"
   image=$($root/scripts/build-$target.sh | tail -n 1)

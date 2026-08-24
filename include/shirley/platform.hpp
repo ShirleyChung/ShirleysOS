@@ -4,6 +4,7 @@
 
 namespace shirley::platform {
 
+// 初始化平台層，並取得平台名稱。
 void initialize(const BootInfo&);
 const char* name();
 

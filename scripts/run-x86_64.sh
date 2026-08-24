@@ -1,4 +1,5 @@
 #!/usr/bin/env sh
+# 建置 x86_64 映像並在 QEMU 中啟動。
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 command -v qemu-system-x86_64 >/dev/null 2>&1 || { echo "Missing qemu-system-x86_64. Install with: brew install qemu" >&2; exit 1; }
