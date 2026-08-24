@@ -7,6 +7,7 @@ namespace shirley::arch {
 using AddressSpaceHandle = std::uintptr_t;
 
 void initialize();
+const char* name();
 void enable_interrupts();
 void disable_interrupts();
 [[noreturn]] void halt();
