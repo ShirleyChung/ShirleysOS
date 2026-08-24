@@ -5,9 +5,15 @@ echo "ShirleyOS development environment"
 # missing 記錄是否有任何依賴尚未安裝。
 missing=0
 check() { if command -v "$1" >/dev/null 2>&1; then echo "[OK] $1"; else echo "[MISSING] $1"; missing=1; fi; }
-for tool in brew cmake ninja clang lld qemu-system-aarch64 qemu-system-x86_64; do check "$tool"; done
+for tool in brew cmake clang qemu-system-aarch64 qemu-system-x86_64; do check "$tool"; done
+if command -v ld.lld >/dev/null 2>&1 || { command -v brew >/dev/null 2>&1 && [ -x "$(brew --prefix lld 2>/dev/null)/bin/ld.lld" ]; }; then
+  echo "[OK] ld.lld"
+else
+  echo "[MISSING] ld.lld"
+  missing=1
+fi
 if [ "$missing" -eq 0 ]; then echo "Environment ready."; exit 0; fi
 echo ""
 echo "Install missing host dependencies with:"
-echo "  brew install cmake ninja llvm qemu"
+echo "  brew install cmake llvm lld qemu"
 exit 1
