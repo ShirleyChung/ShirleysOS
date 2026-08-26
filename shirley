@@ -1,25 +1,34 @@
 #!/usr/bin/env sh
+# ShirleyOS 開發用的單一進入點：建置、執行、除錯與測試。
+# The single development entry point for ShirleyOS: build, run, debug, test.
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 host=$(uname -m)
 command=${1:-run}
 target=${2:-$host}
 case "$command" in
-  arm64|x86_64) target=$command; command=run ;;
+  arm64|x86_64|apple_silicon) target=$command; command=run ;;
   build|run|debug) ;;
   test) exec "$root/scripts/test-all.sh" ;;
-  *) echo "Usage: ./shirley [arm64|x86_64|build|run|debug|test] [arm64|x86_64]" >&2; exit 2 ;;
+  *) echo "Usage: ./shirley [arm64|x86_64|apple_silicon|build|run|debug] [arm64|x86_64|apple_silicon]" >&2; exit 2 ;;
 esac
 case "$target" in
   arm64|aarch64) target=arm64 ;;
   x86_64|amd64) target=x86_64 ;;
+  apple_silicon|apple) target=apple_silicon ;;
   *) echo "Unsupported target: $target" >&2; exit 2 ;;
 esac
 echo "ShirleyOS Development Runner"
 echo "Host: macOS $host"
 echo "Target: ShirleyOS $target"
+# Apple Silicon 沒有對應的 QEMU 機器模型，只提供建置。
+# Apple Silicon has no matching QEMU machine model, so only build is offered.
+if [ "$target" = apple_silicon ] && [ "$command" != build ]; then
+  echo "Apple Silicon has no emulator target; only 'build' is available." >&2
+  exit 2
+fi
 case "$command" in
-  build) exec "$root/scripts/build-$target.sh" ;;
+  build) exec "$root/scripts/build.sh" "$target" ;;
   run) exec "$root/scripts/run-$target.sh" ;;
   debug) exec "$root/scripts/debug-$target.sh" ;;
 esac

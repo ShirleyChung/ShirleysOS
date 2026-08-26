@@ -25,7 +25,9 @@ bool align_usable(const BootMemoryRegion& region, Extent& result) {
         region.physical_start > std::numeric_limits<PhysicalAddress>::max() - (page_size - 1)) return false;
     auto begin = align_down(region.physical_start + page_size - 1);
     const auto end = align_down(region.physical_start + region.length);
-    if (begin == 0) begin = page_size; // Zero is the failure sentinel.
+    // 位址 0 被用來表示配置失敗，不能拿來配置。
+    // Address 0 is the allocation failure sentinel, so it can never be handed out.
+    if (begin == 0) begin = page_size;
     if (begin >= end) return false;
     result = {begin, end};
     return true;
@@ -77,7 +79,9 @@ void subtract_extent(std::array<Extent, max_extents>& extents, std::size_t& coun
         if (removed.end >= current.end) { current.end = removed.begin; ++i; continue; }
         const auto old_end = current.end;
         current.end = removed.begin;
-        // If metadata is exhausted, conservatively discard the upper half.
+        // 中間被挖掉時需要多一個區段記錄上半段；記錄空間用盡就保守地捨棄上半段。
+        // Splitting a range needs one more extent for the upper half; if the
+        // metadata is exhausted, conservatively discard that upper half.
         if (count < max_extents) {
             for (std::size_t j = count; j > i + 1; --j) extents[j] = extents[j - 1];
             extents[i + 1] = {removed.end, old_end};
@@ -117,7 +121,8 @@ void initialize(const BootInfo& info) {
         if (info.memory_regions[i].type == MemoryType::Usable && align_usable(info.memory_regions[i], extent))
             insert_extent(managed, managed_count, extent);
     }
-    // Non-usable descriptors win if firmware supplies overlapping entries.
+    // 韌體回報的區段若彼此重疊，以不可使用的那一筆為準。
+    // When firmware reports overlapping ranges, the non-usable one wins.
     for (std::uint64_t i = 0; i < info.memory_region_count; ++i) {
         Extent extent{};
         if (info.memory_regions[i].type != MemoryType::Usable && align_reserved(info.memory_regions[i], extent))

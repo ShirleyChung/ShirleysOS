@@ -6,6 +6,9 @@ ByteStream* input = nullptr;
 ByteStream* output = nullptr;
 ByteStream* error = nullptr;
 
+// 共用的參數檢查：空緩衝區是參數錯誤，未設定串流是不支援。
+// Shared argument checking: a null buffer is an argument error, while an
+// unset stream is simply unsupported.
 Result read(ByteStream* stream, void* buffer, std::size_t length) {
     if (length != 0 && buffer == nullptr) return {0, Error::InvalidArgument};
     if (stream == nullptr) return {0, Error::Unsupported};

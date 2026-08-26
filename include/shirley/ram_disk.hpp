@@ -4,6 +4,9 @@
 
 namespace shirley::io {
 
+// 以一段既有記憶體當成區塊裝置；不會自行配置或釋放儲存空間。
+// A block device backed by a caller-supplied memory buffer. It never allocates
+// or frees the storage itself.
 class RamDisk final : public BlockDevice {
 public:
     RamDisk(void* storage, std::size_t bytes, std::size_t block_bytes = 512);

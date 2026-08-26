@@ -1,25 +1,5 @@
 #!/usr/bin/env sh
-# 在 ARM64 建置目錄產生並編譯核心。
+# 建置 QEMU ARM64 目標（arch/arm64 加上 platform/qemu_arm64）。
+# Build the QEMU ARM64 target: arch/arm64 plus platform/qemu_arm64.
 set -eu
-# 優先使用 Homebrew LLVM，否則使用系統 clang。
-root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-build="$root/build/arm64"
-llvm_prefix=$(brew --prefix llvm 2>/dev/null || dirname "$(command -v clang)")
-lld=$(command -v ld.lld 2>/dev/null || true)
-if [ -z "$lld" ] && command -v brew >/dev/null 2>&1; then
-  lld_prefix=$(brew --prefix lld 2>/dev/null || true)
-  [ -x "$lld_prefix/bin/ld.lld" ] && lld="$lld_prefix/bin/ld.lld"
-fi
-[ -n "$lld" ] || { echo "Missing ld.lld. Install with: brew install lld" >&2; exit 1; }
-# Ninja is optional; keep generators in separate build trees so CMake caches do
-# not conflict when a developer switches between them.
-if command -v ninja >/dev/null 2>&1; then
-  generator=Ninja
-else
-  generator="Unix Makefiles"
-  build="$root/build/arm64-make"
-fi
-# 以 ARM64 裸機工具鏈設定 CMake 並執行建置。
-cmake -S "$root" -B "$build" -G "$generator" -DSHIRLEY_TARGET=arm64 -DCMAKE_TOOLCHAIN_FILE="$root/cmake/toolchain-arm64.cmake" -DCMAKE_C_COMPILER="$llvm_prefix/bin/clang" -DCMAKE_CXX_COMPILER="$llvm_prefix/bin/clang++" -DCMAKE_ASM_COMPILER="$llvm_prefix/bin/clang" -DSHIRLEY_LLD="$lld" -DSHIRLEY_OBJCOPY="$llvm_prefix/bin/llvm-objcopy" >&2
-cmake --build "$build" >&2
-echo "$build/shirley-kernel"
+exec "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/build.sh" arm64

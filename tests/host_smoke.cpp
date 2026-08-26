@@ -26,9 +26,11 @@ int main() {
     assert(shirley::memory::allocate_page() == 0);
     assert(shirley::memory::free_pages() == 0);
     shirley::memory::free_page(second);
-    shirley::memory::free_page(second); // Double-free is ignored.
-    shirley::memory::free_page(0x3000); // Reserved.
-    shirley::memory::free_page(0x4001); // Unaligned.
+    // 重複釋放、保留區段與未對齊的位址都必須被忽略。
+    // A double free, a reserved range, and an unaligned address are all ignored.
+    shirley::memory::free_page(second);
+    shirley::memory::free_page(0x3000);
+    shirley::memory::free_page(0x4001);
     assert(shirley::memory::free_pages() == 1);
     assert(shirley::memory::allocate_page() == second);
     assert(shirley::memory::free_pages() == 0);

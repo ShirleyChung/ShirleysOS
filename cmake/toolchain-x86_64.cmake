@@ -1,4 +1,5 @@
 # 使用 clang 的 x86_64 裸機交叉編譯設定。
+# Cross-compilation settings for bare-metal x86_64 with clang.
 set(CMAKE_SYSTEM_NAME Generic)
 set(CMAKE_SYSTEM_PROCESSOR x86_64)
 if(NOT CMAKE_C_COMPILER)
@@ -14,4 +15,5 @@ set(CMAKE_C_COMPILER_TARGET x86_64-none-elf)
 set(CMAKE_CXX_COMPILER_TARGET x86_64-none-elf)
 set(CMAKE_ASM_COMPILER_TARGET x86_64-none-elf)
 # 避免 CMake 在設定階段嘗試執行裸機程式。
+# Stop CMake from trying to run a bare-metal program during configuration.
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)

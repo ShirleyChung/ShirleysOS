@@ -1,2 +1,4 @@
 #pragma once
+// 裸機核心使用的 <cstddef> 最小子集。
+// The minimal subset of <cstddef> the freestanding kernel uses.
 namespace std { using size_t = decltype(sizeof(0)); }
