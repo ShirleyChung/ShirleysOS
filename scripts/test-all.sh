@@ -55,7 +55,8 @@ elif target == 'arm64_uefi':
     args += ['-machine', 'virt', '-cpu', 'cortex-a72', '-bios', firmware,
              '-drive', 'format=raw,file=fat:rw:' + artifact]
 else:
-    args += ['-machine', 'q35', '-bios', firmware,
+    args += ['-machine', 'q35',
+             '-drive', 'if=pflash,format=raw,readonly=on,file=' + firmware,
              '-drive', 'format=raw,file=fat:rw:' + artifact]
 # UEFI 韌體本身要花數秒才會交出控制權，因此給它比較長的時間。
 # UEFI firmware needs several seconds before it hands over control, so it gets

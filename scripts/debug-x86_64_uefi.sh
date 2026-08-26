@@ -9,4 +9,6 @@ esp=$(sh "$root/scripts/build.sh" x86_64_uefi)
 echo "ShirleyOS UEFI waiting for debugger on localhost:1234"
 echo "Kernel symbols: $root/build/x86_64_uefi/shirley-kernel.elf"
 exec qemu-system-x86_64 -machine q35 -m 512M -nographic -monitor none -serial stdio \
-  -S -gdb tcp::1234 -bios "$firmware" -drive "format=raw,file=fat:rw:$esp"
+  -S -gdb tcp::1234 \
+  -drive "if=pflash,format=raw,readonly=on,file=$firmware" \
+  -drive "format=raw,file=fat:rw:$esp"

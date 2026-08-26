@@ -14,4 +14,5 @@ echo "Launching QEMU..."
 # QEMU serves the esp directory to the firmware as a FAT volume, so no real FAT
 # image has to be produced.
 exec qemu-system-x86_64 -machine q35 -m 512M -nographic -monitor none -serial stdio \
-  -bios "$firmware" -drive "format=raw,file=fat:rw:$esp"
+  -drive "if=pflash,format=raw,readonly=on,file=$firmware" \
+  -drive "format=raw,file=fat:rw:$esp"
