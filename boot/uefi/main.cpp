@@ -56,6 +56,58 @@ typedef void (*KernelEntry)(const BootHandoff*);
 SystemTable* system_table = nullptr;
 BootServices* boot_services = nullptr;
 
+// Firmware ConsoleOut is often graphical even when QEMU itself is running with
+// -nographic.  Keep a tiny, allocation-free UART path in the loader so every
+// stage before the kernel console is visible in the same captured log.
+#if defined(__x86_64__)
+constexpr std::uint16_t serial_base = 0x3f8;
+
+void serial_out(std::uint16_t port, std::uint8_t value) {
+    __asm__ volatile("outb %0, %1" : : "a"(value), "Nd"(port));
+}
+
+std::uint8_t serial_in(std::uint16_t port) {
+    std::uint8_t value;
+    __asm__ volatile("inb %1, %0" : "=a"(value) : "Nd"(port));
+    return value;
+}
+
+void serial_initialize() {
+    serial_out(serial_base + 1, 0x00);
+    serial_out(serial_base + 3, 0x80);
+    serial_out(serial_base, 0x03);
+    serial_out(serial_base + 1, 0x00);
+    serial_out(serial_base + 3, 0x03);
+    serial_out(serial_base + 2, 0xc7);
+    serial_out(serial_base + 4, 0x03);
+}
+
+void serial_put(char value) {
+    while ((serial_in(serial_base + 5) & (1u << 5)) == 0) {}
+    serial_out(serial_base, static_cast<std::uint8_t>(value));
+}
+#else
+// QEMU virt exposes its PL011 UART at this architectural platform address.
+constexpr std::uintptr_t serial_base = 0x09000000;
+
+void serial_initialize() {}
+
+void serial_put(char value) {
+    auto* const data = reinterpret_cast<volatile std::uint32_t*>(serial_base);
+    auto* const flags = reinterpret_cast<volatile std::uint32_t*>(serial_base + 0x18);
+    while ((*flags & (1u << 5)) != 0) {}
+    *data = static_cast<std::uint8_t>(value);
+}
+#endif
+
+void serial_print(const char* text) {
+    if (text == nullptr) return;
+    for (; *text != '\0'; ++text) {
+        if (*text == '\n') serial_put('\r');
+        serial_put(*text);
+    }
+}
+
 // 交接資料必須在 ExitBootServices 之前就備妥，之後只能填值不能配置。
 // The handoff data has to exist before ExitBootServices; afterwards it can
 // only be filled in, never allocated.
@@ -85,6 +137,7 @@ void print_hex(std::uint64_t value) {
 // On failure, stop inside the firmware environment so the message stays on
 // screen.
 [[noreturn]] void fail(const Char16* message, Status status) {
+    serial_print("[uefi] fatal error\n");
     print(u"\r\nShirleyOS boot failed: ");
     print(message);
     print(u" status=");
@@ -260,6 +313,9 @@ std::uint64_t exit_boot_services(Handle image, void* map, std::uintptr_t map_cap
         auto status = boot_services->get_memory_map(&map_size, map, &map_key, &descriptor_size,
                                                     &descriptor_version);
         if (failed(status)) fail(u"cannot read the UEFI memory map", status);
+        if (descriptor_size < sizeof(firmware::EfiMemoryDescriptor) ||
+            map_size / descriptor_size >= capacity)
+            fail(u"the UEFI memory map has too many entries", buffer_too_small);
 
         status = boot_services->exit_boot_services(image, map_key);
         if (failed(status)) {
@@ -289,17 +345,21 @@ extern "C" shirley::boot::uefi::Status efi_main(shirley::boot::uefi::Handle imag
 
     system_table = system;
     boot_services = system->boot_services;
+    serial_initialize();
+    serial_print("[uefi] entered EFI application\n");
     print(u"ShirleyOS UEFI boot loader\r\n");
 
     auto* root = open_volume_root(image);
     std::uint64_t file_size = 0;
     auto* file_image = read_kernel(root, file_size);
     root->close(root);
+    serial_print("[uefi] kernel ELF read\n");
 
     std::uint64_t kernel_start = 0;
     std::uint64_t kernel_end = 0;
     const auto entry = load_kernel(file_image, file_size, kernel_start, kernel_end);
     if (entry == 0) fail(u"the kernel has no entry point", success);
+    serial_print("[uefi] kernel ELF loaded\n");
 
     // 交接結構與記憶體地圖緩衝區都要在 ExitBootServices 之前配置好。
     // Both the handoff structure and the memory map buffer must be allocated
@@ -326,7 +386,11 @@ extern "C" shirley::boot::uefi::Status efi_main(shirley::boot::uefi::Handle imag
     std::uintptr_t map_key = 0;
     std::uintptr_t descriptor_size = 0;
     std::uint32_t descriptor_version = 0;
-    boot_services->get_memory_map(&map_size, nullptr, &map_key, &descriptor_size, &descriptor_version);
+    status = boot_services->get_memory_map(&map_size, nullptr, &map_key, &descriptor_size,
+                                           &descriptor_version);
+    if (status != buffer_too_small || map_size == 0 ||
+        descriptor_size < sizeof(firmware::EfiMemoryDescriptor))
+        fail(u"cannot size the UEFI memory map", status);
     const auto map_capacity = map_size + 8 * firmware::efi_page_size;
     std::uint64_t map_pages = 0;
     status = boot_services->allocate_pages(allocate_any_pages, loader_data,
@@ -338,6 +402,7 @@ extern "C" shirley::boot::uefi::Status efi_main(shirley::boot::uefi::Handle imag
     auto count = exit_boot_services(image, reinterpret_cast<void*>(map_pages),
                                     static_cast<std::uintptr_t>(map_capacity), descriptor_size,
                                     handoff->regions, max_regions);
+    serial_print("[uefi] boot services exited\n");
 
     // 核心映像與交接資料本身都還在使用中，必須排除在可用記憶體之外。
     // The kernel image and the handoff data are both still live and must be
@@ -354,6 +419,7 @@ extern "C" shirley::boot::uefi::Status efi_main(shirley::boot::uefi::Handle imag
     // 跳進核心；核心的進入點永遠不會返回。
     // Jump into the kernel. Its entry point never returns.
     auto kernel = reinterpret_cast<KernelEntry>(entry);
+    serial_print("[uefi] entering kernel\n");
     kernel(&handoff->handoff);
     for (;;) {}
 }

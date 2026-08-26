@@ -9,7 +9,7 @@ target=${2:-$host}
 case "$command" in
   arm64|arm64_uefi|x86_64|x86_64_uefi|apple_silicon) target=$command; command=run ;;
   build|run|debug) ;;
-  test) exec "$root/scripts/test-all.sh" ;;
+  test) exec sh "$root/scripts/test-all.sh" ;;
   *) echo "Usage: ./shirley [<target>|build|run|debug|test] [<target>]" >&2
      echo "Targets: arm64 arm64_uefi x86_64 x86_64_uefi apple_silicon" >&2
      exit 2 ;;
@@ -31,14 +31,12 @@ if [ "$target" = apple_silicon ] && [ "$command" != build ]; then
   echo "Apple Silicon has no emulator target; only 'build' is available." >&2
   exit 2
 fi
-# UEFI 目標的除錯腳本尚未提供；BIOS 與 -kernel 路徑才有。
-# Debug scripts exist for the BIOS and -kernel paths, not yet for UEFI.
 if [ "$command" = debug ] && [ ! -f "$root/scripts/debug-$target.sh" ]; then
   echo "No debug script for target $target yet." >&2
   exit 2
 fi
 case "$command" in
-  build) exec "$root/scripts/build.sh" "$target" ;;
-  run) exec "$root/scripts/run-$target.sh" ;;
-  debug) exec "$root/scripts/debug-$target.sh" ;;
+  build) exec sh "$root/scripts/build.sh" "$target" ;;
+  run) exec sh "$root/scripts/run-$target.sh" ;;
+  debug) exec sh "$root/scripts/debug-$target.sh" ;;
 esac

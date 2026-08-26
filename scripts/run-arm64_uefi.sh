@@ -4,9 +4,9 @@
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 command -v qemu-system-aarch64 >/dev/null 2>&1 || { echo "Missing qemu-system-aarch64. Install with: brew install qemu" >&2; exit 1; }
-firmware=${SHIRLEY_UEFI_FIRMWARE:-$("$root/scripts/find-uefi-firmware.sh" arm64)}
+firmware=${SHIRLEY_UEFI_FIRMWARE:-$(sh "$root/scripts/find-uefi-firmware.sh" arm64)}
 echo "Building ShirleyOS ARM64 (UEFI)..."
-esp=$("$root/scripts/build.sh" arm64_uefi)
+esp=$(sh "$root/scripts/build.sh" arm64_uefi)
 [ -f "$esp/EFI/BOOT/BOOTAA64.EFI" ] || { echo "The EFI system partition was not created: $esp" >&2; exit 1; }
 echo "Firmware: $firmware"
 echo "Launching QEMU..."

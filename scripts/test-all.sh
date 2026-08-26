@@ -23,7 +23,7 @@ echo PASS
 # actually appears after boot.
 for target in arm64 x86_64 arm64_uefi x86_64_uefi; do
   printf "[%-11s] build ... " "$target"
-  artifact=$("$root/scripts/build.sh" "$target" | tail -n 1)
+  artifact=$(sh "$root/scripts/build.sh" "$target" | tail -n 1)
   echo PASS
 
   # UEFI 目標需要韌體映像；找不到就跳過開機測試而不是讓整份測試失敗。
@@ -32,7 +32,7 @@ for target in arm64 x86_64 arm64_uefi x86_64_uefi; do
   firmware=""
   case "$target" in
     *_uefi)
-      firmware=${SHIRLEY_UEFI_FIRMWARE:-$("$root/scripts/find-uefi-firmware.sh" "${target%_uefi}" 2>/dev/null || true)}
+      firmware=${SHIRLEY_UEFI_FIRMWARE:-$(sh "$root/scripts/find-uefi-firmware.sh" "${target%_uefi}" 2>/dev/null || true)}
       if [ -z "$firmware" ]; then
         printf "[%-11s] boot  ... SKIP (no UEFI firmware installed)\n" "$target"
         continue
@@ -69,6 +69,23 @@ except subprocess.TimeoutExpired:
 if "Hello! Shirley's OS." not in out:
     print(out, file=sys.stderr)
     raise SystemExit(1)
+if target.endswith('_uefi'):
+    stages = [
+        '[uefi] entered EFI application',
+        '[uefi] kernel ELF read',
+        '[uefi] kernel ELF loaded',
+        '[uefi] boot services exited',
+        '[uefi] entering kernel',
+        'ShirleyOS booting...',
+    ]
+    position = -1
+    for stage in stages:
+        next_position = out.find(stage, position + 1)
+        if next_position < 0:
+            print('Missing boot stage: ' + stage, file=sys.stderr)
+            print(out, file=sys.stderr)
+            raise SystemExit(1)
+        position = next_position
 # 未處理的 CPU 例外會印出診斷訊息，這代表開機路徑其實已經失敗。
 # An unhandled CPU exception prints a diagnostic, which means the boot path
 # actually failed even though the greeting was reached.
@@ -82,7 +99,7 @@ done
 # Apple Silicon 沒有模擬器，只驗證能建置出核心。
 # There is no Apple Silicon emulator, so only the build is verified.
 printf "[apple_silicon] build ... "
-"$root/scripts/build.sh" apple_silicon >/dev/null
+sh "$root/scripts/build.sh" apple_silicon >/dev/null
 echo PASS
 
 echo "All tests passed."
