@@ -15,3 +15,9 @@ parser bounds-checks the blob rather than assuming it is well formed.
 | `e820.cpp` | BIOS INT 15h E820 memory map |
 | `fdt.cpp` | Flattened device tree: `/memory` node and reservation block |
 | `apple_boot_args.cpp` | Apple `boot_args`: memory size, framebuffer, device tree |
+| `uefi.cpp` | UEFI memory map, shared by OVMF on x86_64 and EDK2 on ARM64 |
+
+`uefi.cpp` is used from both sides of the UEFI handoff: the boot loader in
+`boot/uefi/` converts the map before `ExitBootServices`, and the same code is
+available to the kernel. It never allocates, because after `ExitBootServices`
+no allocation is possible.

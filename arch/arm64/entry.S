@@ -2,6 +2,10 @@
 .global _start
 .type _start, %function
 _start:
+    // UEFI 韌體會把中斷開著，而此時例外向量表還是韌體的，因此一律先遮罩。
+    // UEFI firmware leaves interrupts enabled while the vector table still
+    // belongs to the firmware, so mask them unconditionally.
+    msr daifset, #0xf
     // QEMU virt 與 m1n1 都以 x0 帶入韌體資料指標（裝置樹或 boot_args）。
     // Both QEMU virt and m1n1 pass a firmware data pointer in x0: a device
     // tree or an Apple boot_args structure.

@@ -2,6 +2,10 @@
 
 #include "shirley/arch/x86_64/port_io.hpp"
 
+// 每台 IBM PC 相容機器都有 COM1，不論韌體是 BIOS 還是 UEFI，
+// 因此這個主控台由所有 PC 平台共用。
+// Every IBM-PC-compatible machine has COM1 regardless of whether its firmware
+// is a BIOS or UEFI, so this console is shared by all PC platforms.
 namespace shirley::console {
 namespace {
 

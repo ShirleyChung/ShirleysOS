@@ -8,9 +8,15 @@
 .section .text.boot
 .global _start
 _start:
-    # rdi 由開機載入器帶入韌體記憶體地圖位址，先移到不會被 rep stosb 破壞的暫存器。
-    # The boot loader passes the firmware memory map address in rdi; park it in
-    # a register rep stosb will not clobber.
+    # BIOS 路徑進來時中斷已經關閉，但 UEFI 韌體會把中斷開著，
+    # 而此時 IDT 還是韌體的，因此一律先關中斷。
+    # Interrupts are already off when arriving from the BIOS path, but UEFI
+    # firmware leaves them enabled while the IDT still belongs to the firmware,
+    # so disable them unconditionally.
+    cli
+    # rdi 由開機載入器帶入韌體資料位址，先移到不會被 rep stosb 破壞的暫存器。
+    # The boot loader passes the firmware data address in rdi; park it in a
+    # register rep stosb will not clobber.
     mov r15, rdi
     lea rsp, [rip + boot_stack_top]
     xor ebp, ebp

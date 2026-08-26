@@ -13,6 +13,8 @@ an ARM64 architecture with a separate `platform/apple_silicon` implementation.
 * `platform/` contains machine, firmware, and device integration.
   `platform/pc/` is hardware shared by all PC-compatible machines and
   `platform/firmware/` is firmware data formats shared across machines.
+* `boot/` contains the boot loaders. `boot/uefi/` is the ShirleyOS UEFI loader
+  and `boot/common/` is the code every loader needs.
 * `libc/` is shared except for syscall trampolines in `libc/arch/`.
 
 ## Current status
@@ -22,9 +24,17 @@ GDT, TSS, and IDT with CPU exception reporting; ARM64 installs the EL1
 exception vector table. Both architectures provide a page-table implementation
 of the generic address-space interface and a user-mode entry path. Every
 platform converts its firmware's memory map — BIOS E820, a flattened device
-tree, or Apple `boot_args` — into the neutral `BootInfo` that drives the page
-allocator. See [OS_SPEC.md](OS_SPEC.md) for the architectural source of truth
-and roadmap.
+tree, Apple `boot_args`, or a UEFI memory map — into the neutral `BootInfo`
+that drives the page allocator.
+
+`boot/uefi/` is the ShirleyOS UEFI boot loader: a PE32+ EFI application that
+runs under OVMF on x86_64 and EDK2/AAVMF on ARM64, loads the kernel ELF, exits
+boot services, and hands over a validated `BootHandoff`. That makes
+`x86_64_uefi` and `arm64_uefi` the first targets that boot the way the
+production architecture intends, rather than through a development loader.
+
+See [OS_SPEC.md](OS_SPEC.md) for the architectural source of truth and
+roadmap.
 
 Booting x86_64 under QEMU prints, from the guest kernel's own serial port:
 
@@ -56,10 +66,16 @@ On Apple Silicon, the default target is ARM64. Run it directly with:
 ./shirley
 ./shirley arm64
 ./shirley x86_64
+./shirley x86_64_uefi
+./shirley arm64_uefi
 ./shirley test
 ./shirley debug arm64
 ./shirley build apple_silicon
 ```
+
+The UEFI targets need a firmware image. One ships with QEMU, and
+`scripts/find-uefi-firmware.sh` locates it; set `SHIRLEY_UEFI_FIRMWARE` to
+override the choice.
 
 QEMU is emulating/virtualizing the guest machine. The ShirleyOS boot messages
 shown in the terminal are written by the guest kernel through its UART, not by

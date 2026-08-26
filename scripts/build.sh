@@ -8,10 +8,15 @@ set -eu
 target=${1:?Usage: build.sh <arm64|x86_64|apple_silicon>}
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+# UEFI 目標的成品是 EFI 系統分割區目錄，QEMU 會直接把它當成 FAT 磁碟區。
+# The artifact of a UEFI target is the EFI system partition directory, which
+# QEMU serves directly as a FAT volume.
 case "$target" in
   arm64) toolchain=toolchain-arm64.cmake; artifact=shirley-kernel.elf ;;
+  arm64_uefi) toolchain=toolchain-arm64.cmake; artifact=esp ;;
   apple_silicon) toolchain=toolchain-arm64.cmake; artifact=shirley-kernel.elf ;;
   x86_64) toolchain=toolchain-x86_64.cmake; artifact=shirley-x86_64.img ;;
+  x86_64_uefi) toolchain=toolchain-x86_64.cmake; artifact=esp ;;
   *) echo "Unsupported target: $target" >&2; exit 2 ;;
 esac
 

@@ -7,14 +7,18 @@ host=$(uname -m)
 command=${1:-run}
 target=${2:-$host}
 case "$command" in
-  arm64|x86_64|apple_silicon) target=$command; command=run ;;
+  arm64|arm64_uefi|x86_64|x86_64_uefi|apple_silicon) target=$command; command=run ;;
   build|run|debug) ;;
   test) exec "$root/scripts/test-all.sh" ;;
-  *) echo "Usage: ./shirley [arm64|x86_64|apple_silicon|build|run|debug] [arm64|x86_64|apple_silicon]" >&2; exit 2 ;;
+  *) echo "Usage: ./shirley [<target>|build|run|debug|test] [<target>]" >&2
+     echo "Targets: arm64 arm64_uefi x86_64 x86_64_uefi apple_silicon" >&2
+     exit 2 ;;
 esac
 case "$target" in
   arm64|aarch64) target=arm64 ;;
+  arm64_uefi|aarch64_uefi) target=arm64_uefi ;;
   x86_64|amd64) target=x86_64 ;;
+  x86_64_uefi|amd64_uefi) target=x86_64_uefi ;;
   apple_silicon|apple) target=apple_silicon ;;
   *) echo "Unsupported target: $target" >&2; exit 2 ;;
 esac
@@ -25,6 +29,12 @@ echo "Target: ShirleyOS $target"
 # Apple Silicon has no matching QEMU machine model, so only build is offered.
 if [ "$target" = apple_silicon ] && [ "$command" != build ]; then
   echo "Apple Silicon has no emulator target; only 'build' is available." >&2
+  exit 2
+fi
+# UEFI 目標的除錯腳本尚未提供；BIOS 與 -kernel 路徑才有。
+# Debug scripts exist for the BIOS and -kernel paths, not yet for UEFI.
+if [ "$command" = debug ] && [ ! -f "$root/scripts/debug-$target.sh" ]; then
+  echo "No debug script for target $target yet." >&2
   exit 2
 fi
 case "$command" in

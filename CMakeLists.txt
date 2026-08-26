@@ -21,9 +21,15 @@ if(NOT SHIRLEY_ARCH OR NOT SHIRLEY_PLATFORM)
   elseif(SHIRLEY_TARGET STREQUAL x86_64)
     set(SHIRLEY_ARCH x86_64)
     set(SHIRLEY_PLATFORM qemu_x86_64)
+  elseif(SHIRLEY_TARGET STREQUAL x86_64_uefi)
+    set(SHIRLEY_ARCH x86_64)
+    set(SHIRLEY_PLATFORM qemu_x86_64_uefi)
   elseif(SHIRLEY_TARGET STREQUAL arm64)
     set(SHIRLEY_ARCH arm64)
     set(SHIRLEY_PLATFORM qemu_arm64)
+  elseif(SHIRLEY_TARGET STREQUAL arm64_uefi)
+    set(SHIRLEY_ARCH arm64)
+    set(SHIRLEY_PLATFORM qemu_arm64_uefi)
   elseif(SHIRLEY_TARGET STREQUAL apple_silicon)
     set(SHIRLEY_ARCH arm64)
     set(SHIRLEY_PLATFORM apple_silicon)
@@ -49,6 +55,7 @@ set(SHIRLEY_KERNEL_SOURCES
 set(SHIRLEY_FIRMWARE_E820 platform/firmware/e820.cpp)
 set(SHIRLEY_FIRMWARE_FDT platform/firmware/fdt.cpp)
 set(SHIRLEY_FIRMWARE_APPLE platform/firmware/apple_boot_args.cpp)
+set(SHIRLEY_FIRMWARE_UEFI platform/firmware/uefi.cpp)
 
 if(SHIRLEY_ARCH STREQUAL host)
   # 主機目標只建置可以在開發機上測試的架構中立元件。
@@ -60,13 +67,15 @@ if(SHIRLEY_ARCH STREQUAL host)
     kernel/memory/page_allocator.cpp
     kernel/process/scheduler.cpp
     drivers/block/ram_disk.cpp
+    boot/common/elf64.cpp
     ${SHIRLEY_FIRMWARE_E820}
     ${SHIRLEY_FIRMWARE_FDT}
-    ${SHIRLEY_FIRMWARE_APPLE})
+    ${SHIRLEY_FIRMWARE_APPLE}
+    ${SHIRLEY_FIRMWARE_UEFI})
   target_include_directories(shirley-kernel-core PUBLIC include)
 
   enable_testing()
-  foreach(test host_smoke core_services_smoke platform_model_smoke)
+  foreach(test host_smoke core_services_smoke platform_model_smoke boot_loader_smoke)
     string(REPLACE "_" "-" test_name ${test})
     add_executable(shirley-${test_name} tests/${test}.cpp)
     target_link_libraries(shirley-${test_name} PRIVATE shirley-kernel-core)
@@ -95,6 +104,13 @@ if(SHIRLEY_ARCH STREQUAL x86_64)
   # The kernel uses no floating point, and disabling SSE stops the compiler
   # emitting SIMD instructions before exception handling is ready.
   set(SHIRLEY_ARCH_FLAGS -mno-red-zone -mno-sse -mno-sse2 -mno-mmx)
+  # UEFI 應用程式使用 Microsoft x64 呼叫慣例，因此以 windows 目標編譯。
+  # A UEFI application uses the Microsoft x64 calling convention, so it is
+  # compiled for a windows target.
+  set(SHIRLEY_EFI_TARGET x86_64-unknown-windows)
+  set(SHIRLEY_EFI_MACHINE x64)
+  set(SHIRLEY_EFI_FLAGS -mno-red-zone)
+  set(SHIRLEY_EFI_NAME BOOTX64.EFI)
 elseif(SHIRLEY_ARCH STREQUAL arm64)
   set(SHIRLEY_ARCH_SOURCES
     arch/arm64/arch.cpp
@@ -106,25 +122,50 @@ elseif(SHIRLEY_ARCH STREQUAL arm64)
   # 同樣的理由：核心程式碼不得使用 FP/SIMD 暫存器。
   # Same reason: kernel code must not touch the FP/SIMD registers.
   set(SHIRLEY_ARCH_FLAGS -mgeneral-regs-only)
+  set(SHIRLEY_EFI_TARGET aarch64-unknown-windows)
+  set(SHIRLEY_EFI_MACHINE arm64)
+  set(SHIRLEY_EFI_FLAGS)
+  set(SHIRLEY_EFI_NAME BOOTAA64.EFI)
 else()
   message(FATAL_ERROR "Unknown SHIRLEY_ARCH: ${SHIRLEY_ARCH}")
 endif()
 
-# 平台層原始碼；每個平台自行決定要使用哪些韌體格式。
-# Platform layer sources; each platform picks the firmware formats it needs.
+# 平台層原始碼；每個平台自行決定要使用哪些韌體格式與共用裝置驅動程式。
+# Platform layer sources; each platform picks the firmware formats and shared
+# device drivers it needs.
+set(SHIRLEY_UEFI_PLATFORM OFF)
 if(SHIRLEY_PLATFORM STREQUAL qemu_x86_64)
   set(SHIRLEY_PLATFORM_SOURCES
     platform/qemu_x86_64/boot_protocol.cpp
-    platform/qemu_x86_64/console.cpp
     platform/qemu_x86_64/platform.cpp
+    platform/pc/serial_console.cpp
     platform/pc/pic.cpp
     ${SHIRLEY_FIRMWARE_E820})
+elseif(SHIRLEY_PLATFORM STREQUAL qemu_x86_64_uefi)
+  # 同一台 QEMU PC，只是換成 UEFI 韌體，因此沿用 platform/pc/ 的裝置驅動程式。
+  # The same QEMU PC with UEFI firmware instead, so the platform/pc/ device
+  # drivers are reused unchanged.
+  set(SHIRLEY_PLATFORM_SOURCES
+    platform/qemu_x86_64_uefi/boot_protocol.cpp
+    platform/qemu_x86_64_uefi/platform.cpp
+    platform/pc/serial_console.cpp
+    platform/pc/pic.cpp)
+  set(SHIRLEY_UEFI_PLATFORM ON)
 elseif(SHIRLEY_PLATFORM STREQUAL qemu_arm64)
   set(SHIRLEY_PLATFORM_SOURCES
     platform/qemu_arm64/boot_protocol.cpp
     platform/qemu_arm64/console.cpp
     platform/qemu_arm64/platform.cpp
     ${SHIRLEY_FIRMWARE_FDT})
+elseif(SHIRLEY_PLATFORM STREQUAL qemu_arm64_uefi)
+  # 同一台 QEMU virt，只是換成 EDK2 韌體，因此沿用同一顆 PL011 驅動程式。
+  # The same QEMU virt machine with EDK2 firmware instead, so the very same
+  # PL011 driver is reused.
+  set(SHIRLEY_PLATFORM_SOURCES
+    platform/qemu_arm64_uefi/boot_protocol.cpp
+    platform/qemu_arm64/console.cpp
+    platform/qemu_arm64_uefi/platform.cpp)
+  set(SHIRLEY_UEFI_PLATFORM ON)
 elseif(SHIRLEY_PLATFORM STREQUAL apple_silicon)
   set(SHIRLEY_PLATFORM_SOURCES
     platform/apple_silicon/boot_protocol.cpp
@@ -195,4 +236,54 @@ if(SHIRLEY_PLATFORM STREQUAL qemu_x86_64)
     DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/boot.bin ${CMAKE_CURRENT_BINARY_DIR}/kernel.bin
             ${CMAKE_SOURCE_DIR}/cmake/make-disk-image.cmake)
   add_custom_target(shirley-disk ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/shirley-x86_64.img)
+endif()
+
+if(SHIRLEY_UEFI_PLATFORM)
+  # UEFI 應用程式是 PE32+ 而不是 ELF，使用的呼叫慣例也和核心不同，因此以另一組
+  # 編譯器目標與連結器單獨建置，不能放進核心的物件庫。
+  # A UEFI application is PE32+ rather than ELF and uses a different calling
+  # convention from the kernel, so it is built with its own compiler target and
+  # linker instead of joining the kernel's object library.
+  find_program(SHIRLEY_LLD_LINK lld-link REQUIRED)
+
+  set(SHIRLEY_EFI_SOURCES
+    boot/uefi/main.cpp
+    boot/common/elf64.cpp
+    boot/common/runtime.cpp
+    ${SHIRLEY_FIRMWARE_UEFI})
+  set(SHIRLEY_EFI_OBJECTS)
+  foreach(source ${SHIRLEY_EFI_SOURCES})
+    get_filename_component(stem ${source} NAME_WE)
+    set(object ${CMAKE_CURRENT_BINARY_DIR}/efi-${stem}.obj)
+    add_custom_command(OUTPUT ${object}
+      COMMAND ${CMAKE_CXX_COMPILER} --target=${SHIRLEY_EFI_TARGET} -std=c++20
+              -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fshort-wchar
+              -Wall -Wextra ${SHIRLEY_EFI_FLAGS}
+              -I${CMAKE_SOURCE_DIR}/kernel/freestanding -I${CMAKE_SOURCE_DIR}/include
+              -I${CMAKE_SOURCE_DIR}/boot/uefi
+              -c ${CMAKE_SOURCE_DIR}/${source} -o ${object}
+      DEPENDS ${CMAKE_SOURCE_DIR}/${source})
+    list(APPEND SHIRLEY_EFI_OBJECTS ${object})
+  endforeach()
+
+  set(SHIRLEY_EFI_IMAGE ${CMAKE_CURRENT_BINARY_DIR}/${SHIRLEY_EFI_NAME})
+  add_custom_command(OUTPUT ${SHIRLEY_EFI_IMAGE}
+    COMMAND ${SHIRLEY_LLD_LINK} -subsystem:efi_application -entry:efi_main -nodefaultlib
+            -machine:${SHIRLEY_EFI_MACHINE} -out:${SHIRLEY_EFI_IMAGE} ${SHIRLEY_EFI_OBJECTS}
+    DEPENDS ${SHIRLEY_EFI_OBJECTS})
+
+  # QEMU 可以直接把一個目錄當成 FAT 磁碟區提供給韌體，因此開發時不需要真的
+  # 產生 FAT 映像；ESP 就是這個目錄的內容。
+  # QEMU can serve a directory to the firmware as a FAT volume, so development
+  # needs no real FAT image; the ESP is simply this directory.
+  set(SHIRLEY_ESP ${CMAKE_CURRENT_BINARY_DIR}/esp)
+  add_custom_command(OUTPUT ${SHIRLEY_ESP}/EFI/BOOT/${SHIRLEY_EFI_NAME}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${SHIRLEY_ESP}/EFI/BOOT
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${SHIRLEY_ESP}/shirley
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SHIRLEY_EFI_IMAGE}
+            ${SHIRLEY_ESP}/EFI/BOOT/${SHIRLEY_EFI_NAME}
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_BINARY_DIR}/shirley-kernel.elf
+            ${SHIRLEY_ESP}/shirley/kernel.elf
+    DEPENDS ${SHIRLEY_EFI_IMAGE} ${CMAKE_CURRENT_BINARY_DIR}/shirley-kernel.elf)
+  add_custom_target(shirley-esp ALL DEPENDS ${SHIRLEY_ESP}/EFI/BOOT/${SHIRLEY_EFI_NAME})
 endif()
