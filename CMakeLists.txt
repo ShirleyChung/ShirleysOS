@@ -44,11 +44,19 @@ message(STATUS "ShirleyOS architecture=${SHIRLEY_ARCH} platform=${SHIRLEY_PLATFO
 set(SHIRLEY_KERNEL_SOURCES
   kernel/kernel_main.cpp
   kernel/format/number.cpp
+  kernel/interrupt/irq.cpp
   kernel/io/console_stream.cpp
+  kernel/io/input_queue.cpp
   kernel/io/standard_streams.cpp
   kernel/memory/page_allocator.cpp
   kernel/process/scheduler.cpp
   kernel/runtime/compiler_runtime.cpp)
+
+# 與硬體無關的裝置驅動程式邏輯，主機建置與核心建置共用。
+# Hardware-independent device driver logic, shared by the host build and the
+# kernel build.
+set(SHIRLEY_DRIVER_SOURCES
+  drivers/input/scancode.cpp)
 
 # 韌體資料格式，可被多個機器平台共用。
 # Firmware data formats, shared by several machine platforms.
@@ -63,10 +71,12 @@ if(SHIRLEY_ARCH STREQUAL host)
   # tested on the development machine.
   add_library(shirley-kernel-core STATIC
     kernel/format/number.cpp
+    kernel/io/input_queue.cpp
     kernel/io/standard_streams.cpp
     kernel/memory/page_allocator.cpp
     kernel/process/scheduler.cpp
     drivers/block/ram_disk.cpp
+    ${SHIRLEY_DRIVER_SOURCES}
     boot/common/elf64.cpp
     ${SHIRLEY_FIRMWARE_E820}
     ${SHIRLEY_FIRMWARE_FDT}
@@ -75,7 +85,7 @@ if(SHIRLEY_ARCH STREQUAL host)
   target_include_directories(shirley-kernel-core PUBLIC include)
 
   enable_testing()
-  foreach(test host_smoke core_services_smoke platform_model_smoke boot_loader_smoke)
+  foreach(test host_smoke core_services_smoke platform_model_smoke boot_loader_smoke input_smoke)
     string(REPLACE "_" "-" test_name ${test})
     add_executable(shirley-${test_name} tests/${test}.cpp)
     target_link_libraries(shirley-${test_name} PRIVATE shirley-kernel-core)
@@ -140,6 +150,9 @@ if(SHIRLEY_PLATFORM STREQUAL qemu_x86_64)
     platform/qemu_x86_64/platform.cpp
     platform/pc/serial_console.cpp
     platform/pc/pic.cpp
+    platform/pc/pit.cpp
+    platform/pc/ps2_keyboard.cpp
+    ${SHIRLEY_DRIVER_SOURCES}
     ${SHIRLEY_FIRMWARE_E820})
 elseif(SHIRLEY_PLATFORM STREQUAL qemu_x86_64_uefi)
   # 同一台 QEMU PC，只是換成 UEFI 韌體，因此沿用 platform/pc/ 的裝置驅動程式。
@@ -149,7 +162,10 @@ elseif(SHIRLEY_PLATFORM STREQUAL qemu_x86_64_uefi)
     platform/qemu_x86_64_uefi/boot_protocol.cpp
     platform/qemu_x86_64_uefi/platform.cpp
     platform/pc/serial_console.cpp
-    platform/pc/pic.cpp)
+    platform/pc/pic.cpp
+    platform/pc/pit.cpp
+    platform/pc/ps2_keyboard.cpp
+    ${SHIRLEY_DRIVER_SOURCES})
   set(SHIRLEY_UEFI_PLATFORM ON)
 elseif(SHIRLEY_PLATFORM STREQUAL qemu_arm64)
   set(SHIRLEY_PLATFORM_SOURCES
@@ -181,6 +197,17 @@ set(SHIRLEY_LINKER_SCRIPT ${CMAKE_SOURCE_DIR}/platform/${SHIRLEY_PLATFORM}/kerne
 set(SHIRLEY_KERNEL_FLAGS
   -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fno-pic
   -Wall -Wextra ${SHIRLEY_ARCH_FLAGS})
+
+# 開啟後鍵盤驅動程式會印出每一個原始掃描碼。預設關閉：正常開機的主控台
+# 不應該被逐鍵的除錯訊息淹沒。
+#
+# Turning this on makes the keyboard driver print every raw scancode. It is off
+# by default: an ordinary boot's console should not be buried under a debug
+# line per keystroke.
+option(SHIRLEY_DEBUG_SCANCODES "Log every raw PS/2 scancode" OFF)
+if(SHIRLEY_DEBUG_SCANCODES)
+  list(APPEND SHIRLEY_KERNEL_FLAGS -DSHIRLEY_DEBUG_SCANCODES)
+endif()
 
 add_library(shirley-kernel-objects OBJECT
   ${SHIRLEY_KERNEL_SOURCES} ${SHIRLEY_ARCH_SOURCES} ${SHIRLEY_PLATFORM_SOURCES})

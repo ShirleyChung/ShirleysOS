@@ -15,6 +15,7 @@ void initialize() {
 // The architecture identifier.
 const char* name() { return "x86_64"; }
 const char* cpu_vendor() { return x86_64::cpu_vendor_string(); }
+const char* interrupt_table_name() { return "IDT"; }
 
 void enable_interrupts() { asm volatile("sti" : : : "memory"); }
 void disable_interrupts() { asm volatile("cli" : : : "memory"); }

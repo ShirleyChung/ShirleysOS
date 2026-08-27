@@ -18,7 +18,15 @@ register conventions into `kernel/`.
 `interrupt.S` emits one fixed-size stub per vector so the IDT can compute an
 entry address arithmetically. The stride is not written down twice: the
 assembler exports `x86_64_isr_stubs` and `x86_64_isr_stubs_end`, and `idt.cpp`
-divides by the vector count.
+divides by the vector count. A vector where the CPU pushes its own error code
+does not push a dummy one, so both cases reach the common entry with the same
+stack layout — and with the 16-byte alignment System V AMD64 requires at the
+call into C++.
+
+Device interrupts arrive here too, but this layer knows nothing about them
+beyond the vector number. Vectors 32 and above are claimed by the platform's
+interrupt controller through `shirley::irq`; an unclaimed one is ignored,
+while an unclaimed exception below 32 is fatal and reports a register dump.
 
 `paging.cpp` walks page tables through physical addresses, which is only valid
 because the boot sector identity-maps the first 1 GiB. Moving the kernel to a

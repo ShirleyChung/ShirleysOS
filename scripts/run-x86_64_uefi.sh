@@ -13,6 +13,19 @@ echo "Launching QEMU..."
 # QEMU 直接把 esp 目錄當成 FAT 磁碟區提供給韌體，因此不需要真的產生 FAT 映像。
 # QEMU serves the esp directory to the firmware as a FAT volume, so no real FAT
 # image has to be produced.
-exec qemu-system-x86_64 -machine q35 -m 512M -nographic -monitor none -serial stdio \
+#
+# 鍵盤事件來自顯示裝置，因此預設開著顯示視窗，IRQ1 才會真的被觸發；
+# SHIRLEY_HEADLESS=1 可以回到純文字模式，但那時沒有鍵盤輸入。
+#
+# Keyboard events come from the display device, so the display window is open
+# by default and IRQ1 genuinely fires. SHIRLEY_HEADLESS=1 returns to the plain
+# text mode, which has no keyboard input.
+if [ "${SHIRLEY_HEADLESS:-0}" = 1 ]; then
+  exec qemu-system-x86_64 -machine q35 -m 512M -nographic -monitor none -serial stdio \
+    -drive "if=pflash,format=raw,readonly=on,file=$firmware" \
+    -drive "format=raw,file=fat:rw:$esp"
+fi
+echo "Type in the QEMU display window to exercise the IRQ1 keyboard path."
+exec qemu-system-x86_64 -machine q35 -m 512M -monitor none -serial stdio \
   -drive "if=pflash,format=raw,readonly=on,file=$firmware" \
   -drive "format=raw,file=fat:rw:$esp"

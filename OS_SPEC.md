@@ -127,13 +127,14 @@ the console and stops the processor rather than continuing silently.
 ### 平台抽象層 / Platform abstraction
 
 `include/shirley/platform.hpp` 涵蓋機器識別、`Capabilities` 記錄（讓通用程式碼
-永遠不必用機器名稱做判斷）、中斷控制器的遮罩與 end-of-interrupt、平台 IRQ 到
-架構向量的對應，以及關機與重開機。
+永遠不必用機器名稱做判斷）、中斷控制器的遮罩、假中斷判斷與 end-of-interrupt、
+平台 IRQ 到架構向量的對應、平台計時器的 tick 計數與頻率，以及關機與重開機。
 
 `include/shirley/platform.hpp` covers machine identity, a `Capabilities`
 record so generic code never tests for a machine by name, interrupt-controller
-masking and end-of-interrupt, the platform IRQ to architecture vector mapping,
-and power off/restart.
+masking, spurious-interrupt detection, and end-of-interrupt, the platform IRQ
+to architecture vector mapping, the platform timer's tick count and rate, and
+power off/restart.
 
 每個平台另外提供 `shirley_platform_boot_info()`，把韌體交給核心的任何資料轉換成
 `include/shirley/boot_info.hpp` 中與機器無關的 `BootInfo`。
@@ -141,6 +142,199 @@ and power off/restart.
 Each platform also supplies `shirley_platform_boot_info()`, which converts
 whatever the firmware handed the kernel into the neutral `BootInfo` in
 `include/shirley/boot_info.hpp`.
+
+## 中斷子系統 / Interrupt subsystem
+
+中斷路徑分成三層，每一層都可以獨立替換：架構層擁有向量表，平台層擁有中斷
+控制器，通用的 IRQ 層把兩者接起來讓驅動程式使用。驅動程式只認得平台 IRQ
+編號，永遠不會直接碰到中斷控制器。
+
+The interrupt path has three layers, each replaceable on its own: the
+architecture layer owns the vector table, the platform layer owns the
+interrupt controller, and a generic IRQ layer joins them for drivers to use.
+A driver knows only a platform IRQ number and never touches an interrupt
+controller directly.
+
+```text
+裝置 / device -> 中斷控制器 / interrupt controller -> 架構向量 / architecture vector
+             -> shirley::irq::dispatch() -> 驅動程式處理常式 / driver handler
+             -> end-of-interrupt
+```
+
+### x86_64 IDT
+
+`arch/x86_64/` 建立完整的 256 項中斷描述元表。`interrupt.S` 產生 256 個等長的
+入口，IDT 因此可以用 `x86_64_isr_stubs + vector * stride` 直接算出每個入口的
+位址；會由 CPU 自行推入錯誤碼的向量不再補上假的錯誤碼，讓堆疊配置在兩種情況
+下完全一致。每個入口都是 DPL 0 的 64 位元中斷閘，使用核心程式碼段選擇子，
+進入處理常式時自動清除 IF，因此中斷處理常式不會被巢狀中斷打斷。入口會依
+`InterruptFrame` 的欄位順序保存所有通用暫存器，在呼叫 C++ 分派函式前讓堆疊
+維持 System V AMD64 要求的 16 位元組對齊，最後以 `iretq` 返回。
+
+`arch/x86_64/` installs a full 256-entry interrupt descriptor table.
+`interrupt.S` generates 256 equally sized entry points, so the IDT can compute
+each one as `x86_64_isr_stubs + vector * stride`; a vector where the CPU
+pushes its own error code does not push a dummy one, keeping the stack layout
+identical either way. Every entry is a 64-bit interrupt gate at DPL 0 using
+the kernel code selector, which clears IF on entry so a handler is never
+interrupted by a nested interrupt. The entry saves every general-purpose
+register in `InterruptFrame` field order, leaves the stack at the 16-byte
+alignment System V AMD64 requires before calling the C++ dispatcher, and
+returns with `iretq`.
+
+向量 0-31 是 CPU 例外，沒有註冊處理常式時會印出暫存器內容並停住處理器。
+向量 32 以上是裝置中斷，沒有註冊處理常式時直接忽略。
+
+Vectors 0-31 are CPU exceptions and, with no handler registered, print a
+register dump and stop the processor. Vectors 32 and above are device
+interrupts and are ignored when nothing is registered.
+
+### 8259A 啟用用後端 / the 8259A bring-up backend
+
+8259A 是 x86_64 的**啟用用**中斷控制器後端，不是長期的中斷架構。它的優點只
+有一個：不需要 ACPI、不需要列舉，開機就能用，因此適合把中斷路徑先跑通。
+
+The 8259A is x86_64's interrupt controller backend **for bring-up**, not the
+long-term interrupt architecture. Its single advantage is that it needs no
+ACPI and no enumeration and works from the moment the machine boots, which
+makes it the right thing to get the interrupt path working end to end.
+
+`platform/pc/pic.cpp` 把兩顆串接的控制器重新對應，讓 IRQ0-7 落在向量
+0x20-0x27、IRQ8-15 落在 0x28-0x2f，避開被 CPU 例外佔用的前 32 個向量。開機
+後除了 IRQ2 串接線之外，所有裝置 IRQ 都是遮罩狀態，由各驅動程式自行解除；
+串接線本身不是裝置中斷，遮住它會讓整顆從控制器都送不出中斷。
+
+`platform/pc/pic.cpp` remaps the two cascaded controllers so IRQ0-7 land on
+vectors 0x20-0x27 and IRQ8-15 on 0x28-0x2f, clear of the first 32 vectors the
+CPU exceptions occupy. After boot every device IRQ is masked except the IRQ2
+cascade line, and each driver unmasks its own; the cascade is not a device
+interrupt, and masking it would silence the whole slave controller.
+
+8259A 有一個必須處理的行為：中斷訊號在確認週期前消失時，控制器仍會送出
+IRQ7 或 IRQ15。這種假中斷不能執行處理常式，也不能送出 end-of-interrupt，
+否則會提早結束下一個真正的中斷。判斷方式是讀取控制器的服務中暫存器，
+從控制器的假中斷則仍須替它向主控制器送出 end-of-interrupt。
+
+The 8259A has one behaviour that must be handled: when the interrupt signal
+disappears before the acknowledge cycle, the controller still reports IRQ7 or
+IRQ15. Such a spurious interrupt must run no handler and must receive no
+end-of-interrupt, which would otherwise prematurely finish the next genuine
+interrupt. It is detected by reading the controller's in-service register, and
+a spurious slave interrupt still owes the master an end-of-interrupt.
+
+### IRQ 抽象層 / the IRQ abstraction
+
+`include/shirley/irq.hpp` 是驅動程式看到的唯一中斷介面：
+
+`include/shirley/irq.hpp` is the only interrupt interface a driver sees:
+
+```c++
+bool shirley::irq::request(unsigned irq, Handler handler, void* context = nullptr);
+void shirley::irq::release(unsigned irq);
+void shirley::irq::dispatch(unsigned irq);
+```
+
+`request()` 透過 `platform::irq_vector()` 取得架構向量、把自己掛上去，然後解除
+該 IRQ 的遮罩；`dispatch()` 先詢問平台這是否為假中斷，執行處理常式，最後送出
+end-of-interrupt。驅動程式因此完全不知道背後是哪一種控制器。
+
+`request()` asks `platform::irq_vector()` for the architecture vector, hooks
+itself onto it, and unmasks the IRQ; `dispatch()` first asks the platform
+whether the interrupt was spurious, runs the handler, and finally signals
+end-of-interrupt. A driver therefore never learns which controller is behind
+it.
+
+這一層同時支援兩種控制器形狀。像 8259A 或 IOAPIC 那樣一個 IRQ 對應一個向量
+的控制器由本層自動接上；像 GIC 或 Apple AIC 那樣把所有裝置中斷集中到單一
+向量的控制器，則由其驅動程式辨識來源後自行呼叫 `dispatch()`。
+
+The layer supports both controller shapes. A controller with one vector per
+IRQ, such as the 8259A or an IOAPIC, is wired up automatically. A controller
+that funnels every device interrupt into a single vector, such as a GIC or
+Apple's AIC, identifies the source itself and then calls `dispatch()`.
+
+### PIT 計時器 / the PIT timer
+
+`platform/pc/pit.cpp` 把 8253/8254 的通道 0 設定成除頻器模式，預設 100 Hz，
+接在 IRQ0。計時器中斷本身只累加 tick，不輸出任何訊息：每秒 100 次的日誌會
+把主控台淹沒。`platform::timer_ticks()` 與 `platform::timer_frequency()` 是
+通用程式碼查詢計時器的方式，沒有計時器驅動程式的平台一律回報 0。
+
+`platform/pc/pit.cpp` programs channel 0 of the 8253/8254 as a rate generator
+at 100 Hz by default, on IRQ0. The timer interrupt only counts ticks and
+prints nothing: a message a hundred times a second would drown the console.
+`platform::timer_ticks()` and `platform::timer_frequency()` are how generic
+code queries the timer, and a platform with no timer driver reports zero.
+
+### PS/2 鍵盤 / the PS/2 keyboard
+
+鍵盤分成兩半。掃描碼解碼完全不碰硬體，因此放在
+`drivers/input/scancode.cpp`，會編進主機建置並由測試涵蓋；讀取連接埠的部分
+放在 `platform/pc/ps2_keyboard.cpp`。驅動程式初始化 8042 控制器、確認第一個
+連接埠會產生 IRQ1、清空韌體留下的位元組，然後透過 IRQ 層註冊處理常式。
+
+The keyboard is split in two. Scancode decoding touches no hardware, so it
+lives in `drivers/input/scancode.cpp`, compiles into the host build, and is
+covered by tests; the part that reads ports lives in
+`platform/pc/ps2_keyboard.cpp`. The driver initializes the 8042 controller,
+makes sure the first port raises IRQ1, drains whatever the firmware left
+behind, and registers its handler through the IRQ layer.
+
+第一版支援掃描碼組 1 的小寫字母、數字、Enter、Backspace、Tab、空白與基本
+標點；放開事件與 Shift、Ctrl、Alt 一律忽略，擴充鍵的兩個位元組整組丟棄。
+解出的字元會回顯到主控台，同時排進 `io::InputQueue`，並由它擔任標準輸入。
+建置時定義 `SHIRLEY_DEBUG_SCANCODES` 會印出每一個原始掃描碼。
+
+The first version covers scancode set 1's lowercase letters, digits, Enter,
+Backspace, Tab, space, and basic punctuation; release events and Shift, Ctrl,
+and Alt are ignored, and both bytes of an extended key are dropped. A decoded
+character is echoed to the console and queued in an `io::InputQueue`, which
+serves as standard input. Defining `SHIRLEY_DEBUG_SCANCODES` at build time
+prints every raw scancode.
+
+`io::InputQueue` 只有一個生產者（中斷處理常式）與一個消費者（一般核心
+程式），生產者只寫 head、消費者只寫 tail，因此不需要鎖。佇列滿了會捨棄新的
+字元，生產者不能去動消費者持有的索引。
+
+`io::InputQueue` has exactly one producer (the interrupt handler) and one
+consumer (ordinary kernel code); the producer only writes head and the
+consumer only writes tail, so no lock is needed. A full queue drops the new
+character, because the producer must not touch the index the consumer owns.
+
+### 後續的中斷控制器後端 / later interrupt controller backends
+
+以下都會實作成新的平台層後端，`include/shirley/irq.hpp` 的介面不需要改變：
+
+Each of these becomes a new platform-layer backend behind the unchanged
+`include/shirley/irq.hpp` interface:
+
+* Local APIC 與 IOAPIC：從 ACPI MADT 取得 IOAPIC 位址與中斷來源覆寫，把
+  全域中斷編號路由到向量，並改用 Local APIC 送出 end-of-interrupt。多處理器
+  支援與 IPI 也需要它。這是 x86_64 的長期中斷架構，8259A 屆時只保留為
+  在沒有 ACPI 時的退路。
+* MSI/MSI-X：PCIe 裝置直接寫入 Local APIC 的訊息位址來遞送中斷，不再佔用
+  IOAPIC 的實體接腳。這需要先有 PCI 設定空間存取，屬於 M5。
+* ARM64：`platform/qemu_arm64` 需要 GICv2 或 GICv3 的分配器與 CPU 介面，
+  Apple Silicon 則使用 `platform/apple_silicon/interrupt_controller.cpp`
+  中的 AIC。兩者都是把中斷集中送到 IRQ 例外入口，再由驅動程式辨識來源，
+  因此接的是 `irq::dispatch()`。ARM64 上與 MSI 對應的機制是 GICv2m 或
+  GICv3 ITS，不是 IOAPIC；IOAPIC 是 x86 專屬的裝置。
+
+* Local APIC and IOAPIC: take the IOAPIC address and interrupt source
+  overrides from the ACPI MADT, route global system interrupt numbers onto
+  vectors, and switch end-of-interrupt to the Local APIC. Multiprocessor
+  support and IPIs need it too. This is x86_64's long-term interrupt
+  architecture, at which point the 8259A remains only as the fallback for a
+  machine with no ACPI.
+* MSI/MSI-X: a PCIe device delivers an interrupt by writing the Local APIC's
+  message address directly, occupying no physical IOAPIC pin. This needs PCI
+  configuration space access first and belongs to M5.
+* ARM64: `platform/qemu_arm64` needs the distributor and CPU interface of a
+  GICv2 or GICv3, and Apple Silicon uses the AIC in
+  `platform/apple_silicon/interrupt_controller.cpp`. Both funnel interrupts
+  into the IRQ exception entry for a driver to demultiplex, so both attach to
+  `irq::dispatch()`. The ARM64 counterpart of MSI is GICv2m or the GICv3 ITS,
+  not an IOAPIC; an IOAPIC is an x86-only device.
 
 ## 目前的開發環境 / Current development environment
 
@@ -357,19 +551,29 @@ platforms. This is the first implementation of the "ShirleyOS Bootloader" step
 of the production boot architecture, so x86_64 no longer depends solely on the
 development BIOS boot sector.
 
+x86_64 的中斷子系統也在本里程碑接通：IDT 之後接上 8259A 啟用用後端、通用
+IRQ 層、PIT 計時器與 PS/2 鍵盤，因此 x86_64 已經有一條完整的中斷驅動輸入
+路徑，閒置時停在 `hlt` 而不是輪詢裝置。詳見「中斷子系統」一節。
+
+The x86_64 interrupt subsystem is joined up in this milestone too: behind the
+IDT sit the 8259A bring-up backend, the generic IRQ layer, the PIT timer, and
+the PS/2 keyboard, so x86_64 now has a complete interrupt-driven input path
+and idles in `hlt` instead of polling a device. See the interrupt subsystem
+section.
+
 本里程碑尚未完成的部分：ARM64 的 MMU 已經實作（`arch::arm64::mmu_enable`）
-但開機時尚未啟用；也還沒有計時器或中斷控制器的分派驅動程式，因此所有裝置
-IRQ 都維持遮罩狀態。UEFI 載入器面對韌體的那一段只經過審閱，尚未實際開機驗證；
-可以在沒有韌體的情況下測試的部分（ELF 讀取、記憶體地圖轉換、交接驗證）
-則已由 `tests/boot_loader_smoke.cpp` 涵蓋。
+但開機時尚未啟用；ARM64 也還沒有中斷控制器驅動程式，因此那一側的裝置 IRQ
+全部維持遮罩狀態，計時器也還沒有。UEFI 載入器面對韌體的那一段只經過審閱，
+尚未實際開機驗證；可以在沒有韌體的情況下測試的部分（ELF 讀取、記憶體地圖
+轉換、交接驗證）則已由 `tests/boot_loader_smoke.cpp` 涵蓋。
 
 Not yet done in this milestone: the ARM64 MMU is implemented
-(`arch::arm64::mmu_enable`) but not enabled at boot, and no timer or
-interrupt-controller demultiplexing driver exists yet, so all device IRQs stay
-masked. The firmware-facing part of the UEFI loader has been reviewed but not
-yet booted; the parts that can be tested without firmware — ELF reading, memory
-map conversion, handoff validation — are covered by
-`tests/boot_loader_smoke.cpp`.
+(`arch::arm64::mmu_enable`) but not enabled at boot, and ARM64 still has no
+interrupt controller driver, so every device IRQ on that side stays masked and
+there is no timer yet either. The firmware-facing part of the UEFI loader has
+been reviewed but not yet booted; the parts that can be tested without
+firmware — ELF reading, memory map conversion, handoff validation — are covered
+by `tests/boot_loader_smoke.cpp`.
 
 ### M1 — 記憶體與使用者空間 / memory and userspace
 
@@ -387,13 +591,16 @@ execute in userspace.
 
 ### 後續規劃 / Roadmap
 
-M2 中斷、計時器、排程器與執行緒；M3 行程與 IPC；M4 VFS、initramfs 與 shell；
-M5 PCI/VirtIO 與儲存；M6 網路；M7 實體 x86_64 PC 啟用；M8 Apple Silicon 啟用；
-M9 GUI 與視窗系統。
+M2 ARM64 中斷控制器、搶佔式排程與執行緒（x86_64 的中斷、計時器與鍵盤已在
+M0.5 完成）；M3 行程與 IPC；M4 VFS、initramfs 與 shell；M5 PCI/VirtIO、儲存
+與 MSI/MSI-X；M6 網路；M7 實體 x86_64 PC 啟用與 APIC/IOAPIC；M8 Apple
+Silicon 啟用；M9 GUI 與視窗系統。
 
-M2 interrupts, timer, scheduler, and threads; M3 processes and IPC; M4 VFS,
-initramfs, and shell; M5 PCI/VirtIO and storage; M6 networking; M7 physical
-x86_64 PC bring-up; M8 Apple Silicon bring-up; M9 GUI/window system.
+M2 the ARM64 interrupt controller, preemptive scheduling, and threads (x86_64
+interrupts, timer, and keyboard landed in M0.5); M3 processes and IPC; M4 VFS,
+initramfs, and shell; M5 PCI/VirtIO, storage, and MSI/MSI-X; M6 networking;
+M7 physical x86_64 PC bring-up and APIC/IOAPIC; M8 Apple Silicon bring-up;
+M9 GUI/window system.
 
 ## 程式撰寫理念 / Coding philosophy
 

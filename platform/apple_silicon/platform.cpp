@@ -42,6 +42,18 @@ void end_of_interrupt(Irq irq) { apple::interrupt_controller_end_of_interrupt(ir
 // AIC device interrupts all arrive at the IRQ exception entry, where the
 // controller driver identifies the source.
 unsigned irq_vector(Irq) { return arch::arm64::current_el_spx_irq; }
+// AIC 沒有 8259A 那種假中斷；沒有待處理事件時 EVENT 暫存器回報的是
+// 「無事件」，而不是一個假的中斷編號。
+//
+// The AIC has no equivalent of the 8259A's spurious interrupt. With nothing
+// pending, its EVENT register reports "no event" rather than a fake interrupt
+// number.
+bool spurious_interrupt(Irq) { return false; }
+
+// Apple 的系統計時器驅動程式排在 M8。
+// The Apple system timer driver arrives in M8.
+std::uint64_t timer_ticks() { return 0; }
+unsigned timer_frequency() { return 0; }
 
 // Apple Silicon 沒有 PSCI；關機與重開機需要 SMC 與 PMU 驅動程式，排在 M8。
 // Apple Silicon has no PSCI. Power off and restart need SMC and PMU drivers,

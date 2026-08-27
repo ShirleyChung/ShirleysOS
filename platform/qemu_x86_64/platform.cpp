@@ -2,7 +2,10 @@
 
 #include "shirley/arch.hpp"
 #include "shirley/arch/x86_64/port_io.hpp"
+#include "shirley/console.hpp"
 #include "shirley/platform/pc/pic.hpp"
+#include "shirley/platform/pc/pit.hpp"
+#include "shirley/platform/pc/ps2_keyboard.hpp"
 
 namespace shirley::platform {
 namespace {
@@ -29,12 +32,19 @@ void initialize(const BootInfo& boot_info) {
     // Remap the controller's vectors only after the architecture layer has
     // installed the IDT.
     pc::pic_initialize();
+    console::write("[IRQ] PIC remapped 0x20/0x28\n");
+    // 裝置驅動程式各自向 IRQ 層註冊；此時中斷仍是關閉的，要等
+    // kernel_main() 呼叫 arch::enable_interrupts() 才會真的送達。
+    //
+    // Each device driver registers with the IRQ layer for itself. Interrupts
+    // are still disabled here and only start arriving once kernel_main() calls
+    // arch::enable_interrupts().
+    const bool timer = pc::pit_initialize(pc::pit_default_frequency);
+    pc::ps2_keyboard_initialize();
     platform_capabilities = {
         .serial_console = true,
         .interrupt_controller = true,
-        // PIT 與 HPET 驅動程式在 M2 才會加入。
-        // PIT and HPET drivers arrive in M2.
-        .timer = false,
+        .timer = timer,
         .framebuffer = boot_info.framebuffer.address != 0,
     };
 }
@@ -47,6 +57,10 @@ void enable_irq(Irq irq) { pc::pic_unmask(irq); }
 void disable_irq(Irq irq) { pc::pic_mask(irq); }
 void end_of_interrupt(Irq irq) { pc::pic_end_of_interrupt(irq); }
 unsigned irq_vector(Irq irq) { return pc::base_vector + irq; }
+bool spurious_interrupt(Irq irq) { return pc::pic_spurious(irq); }
+
+std::uint64_t timer_ticks() { return pc::pit_ticks(); }
+unsigned timer_frequency() { return pc::pit_frequency(); }
 
 [[noreturn]] void power_off() {
     // 兩種機型都試一次，失敗時退回停機。

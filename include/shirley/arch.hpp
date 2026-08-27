@@ -24,6 +24,12 @@ const char* name();
 // 取得 CPU 廠商字串；架構無法辨識時回傳 "unknown"。
 // The CPU vendor string, or "unknown" when the architecture cannot identify it.
 const char* cpu_vendor();
+// 架構中斷向量表的名稱，只用於開機診斷輸出：x86_64 是 "IDT"，
+// ARM64 是 "EL1 exception vector table"。
+//
+// The name of the architecture's interrupt vector table, used only in boot
+// diagnostics: "IDT" on x86_64 and "EL1 exception vector table" on ARM64.
+const char* interrupt_table_name();
 
 void enable_interrupts();
 void disable_interrupts();

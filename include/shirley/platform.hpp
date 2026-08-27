@@ -35,6 +35,24 @@ void end_of_interrupt(Irq);
 // 將平台 IRQ 對應到架構中斷向量。
 // Map a platform IRQ onto an architecture interrupt vector.
 unsigned irq_vector(Irq);
+// 這次中斷是否為控制器的假中斷（spurious）。8259A 在中斷訊號於確認週期前
+// 消失時，仍會送出 IRQ7 或 IRQ15；這種中斷不可以執行處理常式，也不可以送出
+// end-of-interrupt。平台若無此問題一律回傳 false。
+//
+// Whether this interrupt is one the controller raised spuriously. An 8259A
+// still reports IRQ7 or IRQ15 when the interrupt signal disappears before the
+// acknowledge cycle; such an interrupt must run no handler and receive no
+// end-of-interrupt. A platform without this behaviour always returns false.
+bool spurious_interrupt(Irq);
+
+// 平台計時器自開機以來累積的中斷次數與中斷頻率。沒有計時器驅動程式的平台
+// 回報 0，因此通用程式碼可以直接以 timer_frequency() 是否為 0 判斷。
+//
+// The platform timer's interrupt count since boot and its interrupt rate. A
+// platform with no timer driver reports zero for both, so generic code can
+// simply test timer_frequency() against zero.
+std::uint64_t timer_ticks();
+unsigned timer_frequency();
 
 // 平台電源控制；韌體不支援時退回停機。
 // Platform power control; falls back to halting when firmware has no support.

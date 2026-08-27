@@ -14,6 +14,7 @@ void initialize() {
 // The architecture name used in kernel messages and diagnostics.
 const char* name() { return "ARM64"; }
 const char* cpu_vendor() { return arm64::cpu_vendor_string(); }
+const char* interrupt_table_name() { return "EL1 exception vector table"; }
 
 // DAIF 的 I 位元遮罩 IRQ；daifclr/daifset 直接操作該位元。
 // The I bit in DAIF masks IRQs; daifclr and daifset act on it directly.

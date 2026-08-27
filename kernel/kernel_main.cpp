@@ -3,6 +3,7 @@
 #include "shirley/console.hpp"
 #include "shirley/format.hpp"
 #include "shirley/io.hpp"
+#include "shirley/irq.hpp"
 #include "shirley/memory.hpp"
 #include "shirley/platform.hpp"
 #include "shirley/scheduler.hpp"
@@ -43,6 +44,20 @@ extern "C" [[noreturn]] void kernel_main(const shirley::BootInfo* boot_info) {
     shirley::arch::initialize();
     shirley::console::initialize();
     shirley::io::initialize_console_streams();
+    // 主控台可用後的第一件事，就是回報架構向量表已經安裝。
+    // The first thing worth reporting once the console works is that the
+    // architecture's vector table is installed.
+    shirley::console::write("[IRQ] ");
+    shirley::console::write(shirley::arch::interrupt_table_name());
+    shirley::console::write(" initialized\n");
+
+    // IRQ 層必須在任何驅動程式註冊之前清空，而平台初始化就會帶起自己的
+    // 裝置驅動程式，所以順序是 IRQ 層、平台、記憶體、排程器。
+    //
+    // The IRQ layer has to be cleared before any driver registers, and
+    // platform initialization brings up the platform's own device drivers, so
+    // the order is IRQ layer, platform, memory, scheduler.
+    shirley::irq::initialize();
     shirley::platform::initialize(info);
     shirley::memory::initialize(info);
     shirley::scheduler::initialize();
@@ -59,14 +74,34 @@ extern "C" [[noreturn]] void kernel_main(const shirley::BootInfo* boot_info) {
                 " MiB\n");
     write_count("Free pages: ", shirley::memory::free_pages(), "\n");
 
-    // 中斷向量已就緒，且平台中斷控制器目前遮罩所有裝置中斷。
-    // The vectors are installed and the platform controller currently masks
-    // every device interrupt, so enabling interrupts here is safe.
+    // 中斷向量已就緒，平台中斷控制器也只解除了已註冊驅動程式的那幾條線，
+    // 因此在這裡開啟中斷是安全的。
+    //
+    // The vectors are installed and the platform controller has unmasked only
+    // the lines whose drivers registered, so enabling interrupts here is safe.
+    const auto timer_rate = shirley::platform::timer_frequency();
     shirley::arch::enable_interrupts();
     write_field("Interrupts: ", shirley::arch::interrupts_enabled() ? "enabled" : "disabled");
+    if (timer_rate != 0) write_count("Timer: ", timer_rate, " Hz\n");
+    if (shirley::io::standard_input() != nullptr)
+        shirley::console::write("Keyboard: type to echo through the interrupt path\n");
     shirley::console::write("Hello! Shirley's OS.\n");
 
-    // 尚未有可執行的工作，閒置等待下一個中斷。
-    // There is nothing to run yet, so idle until the next interrupt.
-    for (;;) shirley::arch::wait_for_interrupt();
+    // 尚未有可執行的工作，因此閒置等待下一個中斷，而不是輪詢任何裝置。
+    // 計時器中斷本身不輸出任何訊息，但滿一秒時回報一次，證明 IRQ0 會反覆
+    // 送達，也就證明 end-of-interrupt 確實有效。
+    //
+    // There is nothing to run yet, so the kernel idles waiting for the next
+    // interrupt rather than polling any device. The timer interrupt itself
+    // prints nothing, but one second's worth is reported once: proof that IRQ0
+    // keeps arriving, and therefore that end-of-interrupt works.
+    bool timer_reported = timer_rate == 0;
+    for (;;) {
+        shirley::arch::wait_for_interrupt();
+        if (!timer_reported && shirley::platform::timer_ticks() >= timer_rate) {
+            write_count("[IRQ] timer ticking: ", shirley::platform::timer_ticks(),
+                        " interrupts in the first second\n");
+            timer_reported = true;
+        }
+    }
 }

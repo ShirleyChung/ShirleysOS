@@ -18,8 +18,12 @@ ConsoleStream console_stream;
 } // namespace
 
 void initialize_console_streams() {
-    // 尚未有輸入裝置驅動程式，標準輸入維持未設定。
-    // There is no input device driver yet, so standard input stays unset.
+    // 主控台本身只能輸出，因此標準輸入先留空；有輸入裝置的平台會在自己的
+    // 驅動程式初始化時把佇列接上來（PC 平台是 PS/2 鍵盤）。
+    //
+    // The console itself is output-only, so standard input starts unset. A
+    // platform with an input device attaches its queue when that driver comes
+    // up — the PS/2 keyboard on a PC.
     set_standard_input(nullptr);
     set_standard_output(&console_stream);
     set_standard_error(&console_stream);

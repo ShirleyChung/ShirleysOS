@@ -2,7 +2,10 @@
 
 #include "shirley/arch.hpp"
 #include "shirley/arch/x86_64/port_io.hpp"
+#include "shirley/console.hpp"
 #include "shirley/platform/pc/pic.hpp"
+#include "shirley/platform/pc/pit.hpp"
+#include "shirley/platform/pc/ps2_keyboard.hpp"
 
 namespace shirley::platform {
 namespace {
@@ -28,12 +31,19 @@ void initialize(const BootInfo& boot_info) {
     // UEFI firmware leaves its own 8259 configuration behind, so the vectors
     // have to be remapped onto the kernel's layout.
     pc::pic_initialize();
+    console::write("[IRQ] PIC remapped 0x20/0x28\n");
+    // 韌體也在使用 PS/2 控制器與計時器，因此兩個驅動程式都會把硬體重新設定
+    // 成核心要的狀態，而不是沿用 ExitBootServices 之後殘留的設定。
+    //
+    // The firmware was using the PS/2 controller and the timer too, so both
+    // drivers reprogram the hardware into the state the kernel wants instead
+    // of inheriting whatever survived ExitBootServices.
+    const bool timer = pc::pit_initialize(pc::pit_default_frequency);
+    pc::ps2_keyboard_initialize();
     platform_capabilities = {
         .serial_console = true,
         .interrupt_controller = true,
-        // 計時器驅動程式在 M2 才會加入。
-        // The timer driver arrives in M2.
-        .timer = false,
+        .timer = timer,
         // UEFI 的 GOP framebuffer 由開機載入器記錄在開機資訊中。
         // The UEFI GOP framebuffer is recorded in the boot information by the
         // boot loader.
@@ -49,6 +59,10 @@ void enable_irq(Irq irq) { pc::pic_unmask(irq); }
 void disable_irq(Irq irq) { pc::pic_mask(irq); }
 void end_of_interrupt(Irq irq) { pc::pic_end_of_interrupt(irq); }
 unsigned irq_vector(Irq irq) { return pc::base_vector + irq; }
+bool spurious_interrupt(Irq irq) { return pc::pic_spurious(irq); }
+
+std::uint64_t timer_ticks() { return pc::pit_ticks(); }
+unsigned timer_frequency() { return pc::pit_frequency(); }
 
 // 核心已經呼叫過 ExitBootServices，因此不能再使用 UEFI runtime services 的
 // ResetSystem；這裡直接操作硬體。

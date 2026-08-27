@@ -45,6 +45,14 @@ void enable_irq(Irq) {}
 void disable_irq(Irq) {}
 void end_of_interrupt(Irq) {}
 unsigned irq_vector(Irq) { return arch::arm64::current_el_spx_irq; }
+// GIC 沒有 8259A 那種假中斷。
+// A GIC has no equivalent of the 8259A's spurious interrupt.
+bool spurious_interrupt(Irq) { return false; }
+
+// 尚未有計時器驅動程式。
+// There is no timer driver yet.
+std::uint64_t timer_ticks() { return 0; }
+unsigned timer_frequency() { return 0; }
 
 // 核心已經呼叫過 ExitBootServices，因此改用 PSCI 而不是 UEFI runtime services。
 // The kernel has already gone through ExitBootServices, so PSCI is used rather

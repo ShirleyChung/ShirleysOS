@@ -44,6 +44,18 @@ void end_of_interrupt(Irq) {}
 // GIC device interrupts all arrive at the IRQ exception entry, where the
 // controller driver works out which device raised them.
 unsigned irq_vector(Irq) { return arch::arm64::current_el_spx_irq; }
+// GIC 沒有 8259A 那種假中斷；讀取 IAR 拿到的 1023 代表沒有待處理中斷，
+// 那要等 GICv2 驅動程式加入後才需要處理。
+//
+// A GIC has no equivalent of the 8259A's spurious interrupt. The 1023 that a
+// read of IAR returns means no interrupt is pending, and that only becomes
+// relevant once the GICv2 driver lands.
+bool spurious_interrupt(Irq) { return false; }
+
+// 尚未有計時器驅動程式。
+// There is no timer driver yet.
+std::uint64_t timer_ticks() { return 0; }
+unsigned timer_frequency() { return 0; }
 
 [[noreturn]] void power_off() {
     psci_call(psci_system_off);

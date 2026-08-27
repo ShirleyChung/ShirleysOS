@@ -20,8 +20,8 @@ an ARM64 architecture with a separate `platform/apple_silicon` implementation.
 ## Current status
 
 Milestone M0.5 brings up both architectures for real. x86_64 installs its own
-GDT, TSS, and IDT with CPU exception reporting; ARM64 installs the EL1
-exception vector table. Both architectures provide a page-table implementation
+GDT, TSS, and IDT with CPU exception reporting, and drives real device
+interrupts through it; ARM64 installs the EL1 exception vector table. Both architectures provide a page-table implementation
 of the generic address-space interface and a user-mode entry path. Every
 platform converts its firmware's memory map — BIOS E820, a flattened device
 tree, Apple `boot_args`, or a UEFI memory map — into the neutral `BootInfo`
@@ -33,12 +33,24 @@ boot services, and hands over a validated `BootHandoff`. That makes
 `x86_64_uefi` and `arm64_uefi` the first targets that boot the way the
 production architecture intends, rather than through a development loader.
 
+x86_64 also has a working interrupt subsystem: a 256-entry IDT, the 8259A as
+its bring-up interrupt controller backend, a generic `shirley::irq` layer that
+device drivers use instead of touching a controller, a 100 Hz PIT on IRQ0, and
+an interrupt-driven PS/2 keyboard on IRQ1 whose characters are echoed to the
+console and queued as standard input. The kernel idles in `hlt` and polls
+nothing. ARM64 still has no interrupt controller driver, so its device IRQs
+stay masked.
+
 See [OS_SPEC.md](OS_SPEC.md) for the architectural source of truth and
 roadmap.
 
 Booting x86_64 under QEMU prints, from the guest kernel's own serial port:
 
 ```text
+[IRQ] IDT initialized
+[IRQ] PIC remapped 0x20/0x28
+[IRQ] PIT timer enabled on IRQ0
+[IRQ] keyboard IRQ enabled
 ShirleyOS booting...
 Architecture: x86_64
 Processor: GenuineIntel
@@ -48,8 +60,17 @@ Memory regions: 7
 Usable memory: 511 MiB
 Free pages: 130870
 Interrupts: enabled
+Timer: 100 Hz
+Keyboard: type to echo through the interrupt path
 Hello! Shirley's OS.
+[IRQ] timer ticking: 100 interrupts in the first second
 ```
+
+The memory figures move as the kernel image grows. Typing in the QEMU display
+window echoes characters through the IRQ1 path; QEMU sources keyboard events
+from its display device, so `./shirley x86_64` opens one by default. Set
+`SHIRLEY_HEADLESS=1` for the old `-nographic` behaviour, which is output-only
+and has no keyboard.
 
 ## Running ShirleyOS on macOS
 
