@@ -2,11 +2,26 @@
 
 #include "shirley/arch.hpp"
 #include "shirley/arch/arm64/exception.hpp"
+#include "shirley/console.hpp"
+#include "shirley/platform/arm/generic_timer.hpp"
+#include "shirley/platform/arm/gicv2.hpp"
 
 namespace shirley::platform {
 namespace {
 
 Capabilities platform_capabilities{};
+
+// QEMU virt 的 GICv2 固定在這兩個位址。實體機器應該從裝置樹的中斷控制器
+// 節點讀出來，但目前的裝置樹解析器只認得 /memory；加入通用節點查詢之前，
+// 這裡沿用 apple_silicon 對 AIC 位址的同一種做法，以已知常數運作。
+//
+// QEMU virt always puts its GICv2 at these two addresses. A real machine
+// should read them from the device tree's interrupt controller node, but the
+// device tree parser only understands /memory today; until generic node
+// lookup exists this follows what apple_silicon already does for the AIC base
+// and works from known constants.
+constexpr std::uintptr_t virt_gic_distributor = 0x08000000;
+constexpr std::uintptr_t virt_gic_cpu_interface = 0x08010000;
 
 // QEMU virt 的 PSCI 介面預設使用 HVC 呼叫慣例。
 // The PSCI interface on QEMU virt uses the HVC calling convention by default.
@@ -21,12 +36,20 @@ void psci_call(std::uint32_t function) {
 } // namespace
 
 void initialize(const BootInfo& boot_info) {
+    // 中斷控制器要在架構層安裝例外向量表之後才掛上分辨常式。
+    // The controller hooks its demultiplexing handler only after the
+    // architecture layer has installed the exception vector table.
+    const bool controller = arm::gicv2_initialize(virt_gic_distributor, virt_gic_cpu_interface);
+    console::write(controller ? "[IRQ] GICv2 initialized\n"
+                              : "[IRQ] no GICv2 found; device interrupts stay masked\n");
+    // 計時器必須在控制器之後啟用：解除 PPI 30 遮罩的是分配器。
+    // The timer comes up after the controller, because unmasking PPI 30 is the
+    // distributor's job.
+    const bool timer = controller && arm::generic_timer_initialize(arm::generic_timer_default_frequency);
     platform_capabilities = {
         .serial_console = true,
-        // GICv2 驅動程式在 M2 才會加入。
-        // The GICv2 driver arrives in M2.
-        .interrupt_controller = false,
-        .timer = false,
+        .interrupt_controller = controller,
+        .timer = timer,
         .framebuffer = boot_info.framebuffer.address != 0,
     };
 }
@@ -35,27 +58,27 @@ const char* name() { return "QEMU ARM64"; }
 const char* machine() { return "QEMU virt with PL011 UART"; }
 const Capabilities& capabilities() { return platform_capabilities; }
 
-// 尚未有中斷控制器驅動程式，這些操作暫時沒有作用。
-// Without an interrupt controller driver these operations do nothing yet.
-void enable_irq(Irq) {}
-void disable_irq(Irq) {}
-void end_of_interrupt(Irq) {}
-// GIC 的裝置中斷會集中送到 IRQ 例外入口，由控制器驅動程式再分辨。
-// GIC device interrupts all arrive at the IRQ exception entry, where the
-// controller driver works out which device raised them.
-unsigned irq_vector(Irq) { return arch::arm64::current_el_spx_irq; }
-// GIC 沒有 8259A 那種假中斷；讀取 IAR 拿到的 1023 代表沒有待處理中斷，
-// 那要等 GICv2 驅動程式加入後才需要處理。
+void enable_irq(Irq irq) { arm::gicv2_enable(irq); }
+void disable_irq(Irq irq) { arm::gicv2_disable(irq); }
+void end_of_interrupt(Irq irq) { arm::gicv2_end_of_interrupt(irq); }
+// GIC 的裝置中斷全部集中送到同一個 IRQ 例外入口，由控制器驅動程式讀取
+// GICC_IAR 分辨來源，因此這裡沒有專屬向量可以回報。
 //
-// A GIC has no equivalent of the 8259A's spurious interrupt. The 1023 that a
-// read of IAR returns means no interrupt is pending, and that only becomes
-// relevant once the GICv2 driver lands.
+// Every GIC device interrupt lands on the same IRQ exception entry, and the
+// controller driver reads GICC_IAR to identify the source, so there is no
+// dedicated vector to report here.
+unsigned irq_vector(Irq) { return demultiplexed_vector; }
+// GIC 沒有 8259A 那種假中斷：讀取 GICC_IAR 拿到的 1020-1023 代表沒有可處理
+// 的中斷，控制器驅動程式在分辨來源時就已經濾掉，不會走到分派這一步。
+//
+// A GIC has no equivalent of the 8259A's spurious interrupt. The 1020-1023 a
+// read of GICC_IAR can return mean there is nothing to handle, and the
+// controller driver filters those out while identifying the source, so they
+// never reach dispatch.
 bool spurious_interrupt(Irq) { return false; }
 
-// 尚未有計時器驅動程式。
-// There is no timer driver yet.
-std::uint64_t timer_ticks() { return 0; }
-unsigned timer_frequency() { return 0; }
+std::uint64_t timer_ticks() { return arm::generic_timer_ticks(); }
+unsigned timer_frequency() { return arm::generic_timer_frequency(); }
 
 [[noreturn]] void power_off() {
     psci_call(psci_system_off);

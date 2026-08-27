@@ -172,15 +172,20 @@ elseif(SHIRLEY_PLATFORM STREQUAL qemu_arm64)
     platform/qemu_arm64/boot_protocol.cpp
     platform/qemu_arm64/console.cpp
     platform/qemu_arm64/platform.cpp
+    platform/arm/gicv2.cpp
+    platform/arm/generic_timer.cpp
     ${SHIRLEY_FIRMWARE_FDT})
 elseif(SHIRLEY_PLATFORM STREQUAL qemu_arm64_uefi)
-  # 同一台 QEMU virt，只是換成 EDK2 韌體，因此沿用同一顆 PL011 驅動程式。
+  # 同一台 QEMU virt，只是換成 EDK2 韌體，因此沿用同一顆 PL011 驅動程式與
+  # 同一組 ARM 共用硬體驅動程式。
   # The same QEMU virt machine with EDK2 firmware instead, so the very same
-  # PL011 driver is reused.
+  # PL011 driver and the same shared ARM hardware drivers are reused.
   set(SHIRLEY_PLATFORM_SOURCES
     platform/qemu_arm64_uefi/boot_protocol.cpp
     platform/qemu_arm64/console.cpp
-    platform/qemu_arm64_uefi/platform.cpp)
+    platform/qemu_arm64_uefi/platform.cpp
+    platform/arm/gicv2.cpp
+    platform/arm/generic_timer.cpp)
   set(SHIRLEY_UEFI_PLATFORM ON)
 elseif(SHIRLEY_PLATFORM STREQUAL apple_silicon)
   set(SHIRLEY_PLATFORM_SOURCES

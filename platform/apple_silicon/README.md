@@ -24,6 +24,25 @@ Apple device tree, which is a different format from the flattened device tree
 and is not parsed yet. The `boot_args` parsing itself is in
 `platform/firmware/` and is covered by host tests.
 
-Still missing for real hardware: Apple device tree parsing, SMC and PMU
-drivers for power off and restart, AIC version 2 for M2 and later SoCs, and a
-framebuffer console.
+`interrupt_controller.cpp` is a complete AIC path: it masks, unmasks, and
+acknowledges, and it hooks the IRQ exception vector itself so it can read the
+EVENT register, work out which device fired, and call `irq::dispatch()`. That
+is why `platform::irq_vector()` returns `demultiplexed_vector` here — the IRQ
+layer must not hook the vector per IRQ when one vector carries every device.
+
+Two details are worth knowing when this is finally run on hardware. Reading
+EVENT consumes an event, so `end_of_interrupt` deliberately does not read it;
+only the demultiplexing loop does, and it keeps reading until the controller
+reports no event left. And only event type 1, a device IRQ, is dispatched:
+IPIs and timer events use other types and are dropped rather than handed to a
+driver as though they were IRQs.
+
+None of this has ever executed. QEMU has no Apple Silicon machine model, the
+register layout comes from Asahi Linux's published documentation rather than
+from a datasheet, and the exact acknowledge semantics need confirming against
+real hardware in M8.
+
+Still missing for real hardware: the architected timer, whose interrupt number
+comes from the Apple device tree; Apple device tree parsing itself; SMC and
+PMU drivers for power off and restart; AIC version 2 for M2 and later SoCs;
+and a framebuffer console.

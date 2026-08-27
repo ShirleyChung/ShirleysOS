@@ -9,9 +9,13 @@ namespace shirley::platform::apple {
 // selects it at boot.
 void console_set_uart_base(std::uintptr_t base);
 
-// AIC（Apple Interrupt Controller）的基底位址同樣隨機型不同。
+// AIC（Apple Interrupt Controller）的基底位址同樣隨機型不同。初始化會一併
+// 把分辨來源的處理常式掛上 IRQ 例外入口，失敗時回傳 false。
+//
 // The AIC (Apple Interrupt Controller) base address is likewise per-SoC.
-void interrupt_controller_initialize(std::uintptr_t base);
+// Initialization also hooks the source-identifying handler onto the IRQ
+// exception entry, and returns false when that fails.
+bool interrupt_controller_initialize(std::uintptr_t base);
 void interrupt_controller_mask(unsigned irq);
 void interrupt_controller_unmask(unsigned irq);
 void interrupt_controller_end_of_interrupt(unsigned irq);

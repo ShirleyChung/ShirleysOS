@@ -112,22 +112,26 @@ def fail(message):
 
 booted = wait_for("Hello! Shirley's OS.", timeout)
 
+# 開機訊息出現後，計時器已經在跑；等它自己回報滿一秒，證明計時器中斷會反覆
+# 送達，也就證明 end-of-interrupt 有效。兩種架構都適用：x86 是 8259A 上的
+# IRQ0，ARM64 是 GICv2 上的 PPI 30。
+#
+# Once the boot messages appear the timer is already running; waiting for it to
+# report a full second proves the timer interrupt keeps arriving, and therefore
+# that end-of-interrupt works. This holds on both architectures: IRQ0 behind an
+# 8259A on x86, PPI 30 behind a GICv2 on ARM64.
+if booted and not wait_for('[IRQ] timer ticking:', 5):
+    fail('The timer interrupt never reported a full second of ticks')
+
 keyboard = 'not attempted'
 if booted and x86:
-    # 開機訊息出現後，計時器已經在跑；等它自己回報滿一秒，證明 IRQ0 會反覆
-    # 送達，也就證明 end-of-interrupt 有效。
-    #
-    # Once the boot messages appear the timer is already running; waiting for
-    # it to report a full second proves IRQ0 keeps arriving, and therefore that
-    # end-of-interrupt works.
-    if not wait_for('[IRQ] timer ticking:', 5):
-        fail('Timer IRQ0 never reported a full second of ticks')
-
     # 逐一注入按鍵。每個字元都必須回顯，重複輸入仍然有效就代表 IRQ1 的
-    # end-of-interrupt 沒有漏掉。
+    # end-of-interrupt 沒有漏掉。ARM64 目前沒有輸入裝置驅動程式，因此只有
+    # x86 做這一段。
     #
     # Inject the keys one at a time. Every character has to be echoed back, and
     # input that keeps working proves no end-of-interrupt was missed on IRQ1.
+    # ARM64 has no input device driver yet, so only x86 does this part.
     monitor = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     connected = False
     for _ in range(50):
@@ -180,7 +184,8 @@ if target.endswith('_uefi'):
 # Every stage of the interrupt subsystem has to report itself online.
 stages = ['[IRQ] IDT initialized', '[IRQ] PIC remapped 0x20/0x28',
           '[IRQ] PIT timer enabled on IRQ0', '[IRQ] keyboard IRQ enabled'] if x86 else \
-         ['[IRQ] EL1 exception vector table initialized']
+         ['[IRQ] EL1 exception vector table initialized', '[IRQ] GICv2 initialized',
+          '[IRQ] architected timer enabled on PPI 30']
 for stage in stages:
     if stage not in out:
         print('Missing interrupt stage: ' + stage, file=sys.stderr)

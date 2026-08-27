@@ -3,6 +3,7 @@
 #include "internal.hpp"
 #include "shirley/arch.hpp"
 #include "shirley/arch/arm64/exception.hpp"
+#include "shirley/console.hpp"
 
 namespace shirley::platform {
 namespace {
@@ -20,12 +21,21 @@ constexpr std::uintptr_t t8103_aic_base = 0x23b100000ull;
 } // namespace
 
 void initialize(const BootInfo& boot_info) {
-    apple::interrupt_controller_initialize(t8103_aic_base);
+    const bool controller = apple::interrupt_controller_initialize(t8103_aic_base);
+    console::write(controller ? "[IRQ] AIC initialized\n"
+                              : "[IRQ] no AIC found; device interrupts stay masked\n");
+    // 架構計時器是 CPU 自帶的，與 AIC 無關，但它的中斷仍然要經過 AIC 才會
+    // 送到核心，因此同樣要等控制器就緒。Apple SoC 上架構計時器的中斷編號
+    // 來自 Apple 裝置樹，解析那個格式排在 M8，因此這裡還不啟用計時器。
+    //
+    // The architected timer belongs to the CPU rather than to the AIC, but its
+    // interrupt still reaches the core through the AIC, so it too waits for
+    // the controller. Which interrupt number it uses on an Apple SoC comes
+    // from the Apple device tree, whose format is parsed in M8, so the timer
+    // is not brought up here yet.
     platform_capabilities = {
         .serial_console = true,
-        .interrupt_controller = apple::interrupt_controller_present(),
-        // Apple 的系統計時器驅動程式排在 M2。
-        // The Apple system timer driver arrives in M2.
+        .interrupt_controller = controller,
         .timer = false,
         .framebuffer = boot_info.framebuffer.address != 0,
     };
@@ -38,10 +48,13 @@ const Capabilities& capabilities() { return platform_capabilities; }
 void enable_irq(Irq irq) { apple::interrupt_controller_unmask(irq); }
 void disable_irq(Irq irq) { apple::interrupt_controller_mask(irq); }
 void end_of_interrupt(Irq irq) { apple::interrupt_controller_end_of_interrupt(irq); }
-// AIC 的裝置中斷集中送到 IRQ 例外入口，由控制器驅動程式再分辨來源。
-// AIC device interrupts all arrive at the IRQ exception entry, where the
-// controller driver identifies the source.
-unsigned irq_vector(Irq) { return arch::arm64::current_el_spx_irq; }
+// AIC 的裝置中斷全部集中送到同一個 IRQ 例外入口，由控制器驅動程式讀取
+// EVENT 暫存器分辨來源，因此這裡沒有專屬向量可以回報。
+//
+// Every AIC device interrupt lands on the same IRQ exception entry, and the
+// controller driver reads the EVENT register to identify the source, so there
+// is no dedicated vector to report here.
+unsigned irq_vector(Irq) { return demultiplexed_vector; }
 // AIC 沒有 8259A 那種假中斷；沒有待處理事件時 EVENT 暫存器回報的是
 // 「無事件」，而不是一個假的中斷編號。
 //

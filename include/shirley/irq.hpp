@@ -18,13 +18,15 @@ namespace shirley::irq {
 // must never block.
 using Handler = void (*)(unsigned irq, void* context);
 
-// 可註冊的 IRQ 編號上限。8259A 只用到 0-15，預留的空間讓之後的 IOAPIC
-// 全域中斷編號可以直接沿用同一張表。
+// 可註冊的 IRQ 編號上限。8259A 只用到 0-15，GICv2 的 SPI 在 QEMU virt 上會
+// 用到 96 附近，之後的 IOAPIC 全域中斷編號也直接沿用同一張表。超出這個範圍
+// 的中斷仍然會被確認並送出 EOI，只是沒有處理常式可以註冊。
 //
-// The upper bound on registerable IRQ numbers. An 8259A uses only 0-15; the
-// spare room lets a later IOAPIC reuse this same table for its global system
-// interrupt numbers.
-constexpr unsigned max_irq_count = 64;
+// The upper bound on registerable IRQ numbers. An 8259A uses only 0-15, GICv2
+// SPIs reach the high nineties on QEMU virt, and a later IOAPIC reuses this
+// same table for its global system interrupt numbers. An interrupt past this
+// range is still acknowledged and given an EOI; it simply has no handler slot.
+constexpr unsigned max_irq_count = 256;
 
 // 清空處理常式表；必須在任何驅動程式註冊之前呼叫。
 // Clear the handler table. Must run before any driver registers.

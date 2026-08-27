@@ -42,9 +42,17 @@ bool request(unsigned irq, Handler handler, void* context) {
     entry.handler = handler;
     entry.dispatches = 0;
     // 先讓向量指向本層，再解除控制器遮罩，中斷才不會落在還沒接好的向量上。
+    // 控制器自己分辨來源時沒有專屬向量可掛，那個向量早已由控制器驅動程式
+    // 佔用，本層只要備妥處理常式表就好。
+    //
     // Point the vector at this layer before unmasking the controller, so an
-    // interrupt cannot arrive on a vector that is not wired up yet.
-    if (!arch::register_interrupt_handler(platform::irq_vector(irq), vector_trampoline, &entry)) {
+    // interrupt cannot arrive on a vector that is not wired up yet. When the
+    // controller identifies the source itself there is no dedicated vector to
+    // hook — the controller driver already owns it — and this layer only has
+    // to have the handler table ready.
+    const auto vector = platform::irq_vector(irq);
+    if (vector != platform::demultiplexed_vector &&
+        !arch::register_interrupt_handler(vector, vector_trampoline, &entry)) {
         entry = Entry{};
         return false;
     }
@@ -60,14 +68,14 @@ void release(unsigned irq) {
     // 先遮罩再拆掉向量，順序與 request() 相反。
     // Mask first and unhook the vector second, the reverse of request().
     platform::disable_irq(irq);
-    arch::unregister_interrupt_handler(platform::irq_vector(irq));
+    const auto vector = platform::irq_vector(irq);
+    if (vector != platform::demultiplexed_vector) arch::unregister_interrupt_handler(vector);
     entry = Entry{};
 }
 
 bool registered(unsigned irq) { return irq < max_irq_count && entries[irq].taken; }
 
 void dispatch(unsigned irq) {
-    if (irq >= max_irq_count) return;
     // 假中斷不執行處理常式，也不送 end-of-interrupt：控制器並未真的進入
     // 服務中狀態，多送一次 EOI 會把下一個真正的中斷提早結束掉。
     //
@@ -76,9 +84,18 @@ void dispatch(unsigned irq) {
     // would prematurely finish the next genuine interrupt instead.
     if (platform::spurious_interrupt(irq)) return;
 
-    auto& entry = entries[irq];
-    ++entry.dispatches;
-    if (entry.taken && entry.handler != nullptr) entry.handler(irq, entry.context);
+    // 超出處理常式表範圍的 IRQ 沒有東西可執行，但仍然必須走完 EOI：
+    // 中斷控制器已經確認過這個中斷，不回覆它就會讓控制器永遠停在服務中
+    // 狀態，之後什麼都不再送達。
+    //
+    // An IRQ past the end of the handler table has nothing to run, but still
+    // has to be acknowledged: the controller has already taken the interrupt,
+    // and leaving it unanswered parks the controller in service for good.
+    if (irq < max_irq_count) {
+        auto& entry = entries[irq];
+        ++entry.dispatches;
+        if (entry.taken && entry.handler != nullptr) entry.handler(irq, entry.context);
+    }
     // 即使沒有處理常式也要送出 EOI，否則控制器會停在服務中狀態，
     // 之後同優先權的中斷都不會再送達。
     //

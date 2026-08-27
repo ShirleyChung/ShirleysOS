@@ -22,7 +22,7 @@ architecture and machine platform are separate concepts:
 
 ```text
 arch/     x86_64/  arm64/
-platform/ qemu_x86_64/  pc/  qemu_arm64/  apple_silicon/  firmware/
+platform/ qemu_x86_64/  pc/  qemu_arm64/  arm/  apple_silicon/  firmware/
 ```
 
 Apple Silicon 是一個 ARM64 平台，不是一種 CPU 架構。新增架構時主要應該新增
@@ -61,18 +61,27 @@ BIOS and the other by OVMF; they share every device driver under
 `platform/pc/` and differ only in the firmware handoff. `qemu_arm64` and
 `qemu_arm64_uefi` stand in the same relationship.
 
-`platform/` 底下有兩個目錄不代表機器：
+`platform/` 底下有三個目錄不代表機器：
 
-Two `platform/` directories are not machines:
+Three `platform/` directories are not machines:
 
-* `platform/pc/` 存放所有 IBM PC 相容機器共用的硬體，例如 8259A 中斷控制器。
+* `platform/pc/` 存放所有 IBM PC 相容機器共用的硬體：8259A 中斷控制器、
+  8253/8254 計時器、PS/2 鍵盤與 COM1 序列主控台。
+* `platform/arm/` 是它在 ARM 這邊的對應：存放由 ARM 定義、而不是由某一台
+  機器定義的硬體，目前是 GICv2 中斷控制器與架構計時器。Apple Silicon 用的是
+  自家的 AIC，不使用這個目錄。
 * `platform/firmware/` 存放**韌體資料格式**，同一種格式可能出現在多台機器上：
   BIOS E820 記憶體地圖、flattened device tree、Apple `boot_args`，以及 UEFI
   記憶體地圖。這些都是純粹的資料轉換，不碰任何硬體，因此會編進主機建置並由
   測試涵蓋。
 
-* `platform/pc/` holds hardware shared by every IBM-PC-compatible machine,
-  such as the 8259A interrupt controller and the COM1 serial console.
+* `platform/pc/` holds hardware shared by every IBM-PC-compatible machine: the
+  8259A interrupt controller, the 8253/8254 timer, the PS/2 keyboard, and the
+  COM1 serial console.
+* `platform/arm/` is its counterpart on the ARM side: hardware ARM defines
+  rather than any one machine, today a GICv2 interrupt controller and the
+  architected timer. Apple Silicon uses its own AIC and none of this
+  directory.
 * `platform/firmware/` holds firmware *data formats* that more than one
   machine can present: BIOS E820 memory maps, flattened device trees, Apple
   `boot_args`, and UEFI memory maps. These are pure data transformations with
@@ -244,14 +253,37 @@ whether the interrupt was spurious, runs the handler, and finally signals
 end-of-interrupt. A driver therefore never learns which controller is behind
 it.
 
-這一層同時支援兩種控制器形狀。像 8259A 或 IOAPIC 那樣一個 IRQ 對應一個向量
-的控制器由本層自動接上；像 GIC 或 Apple AIC 那樣把所有裝置中斷集中到單一
-向量的控制器，則由其驅動程式辨識來源後自行呼叫 `dispatch()`。
+這一層同時支援兩種控制器形狀，差別由 `platform::irq_vector()` 表達：
 
-The layer supports both controller shapes. A controller with one vector per
-IRQ, such as the 8259A or an IOAPIC, is wired up automatically. A controller
-that funnels every device interrupt into a single vector, such as a GIC or
-Apple's AIC, identifies the source itself and then calls `dispatch()`.
+The layer supports both controller shapes, and `platform::irq_vector()` is
+what tells them apart:
+
+* **一個 IRQ 一個向量**：8259A 與之後的 IOAPIC 屬於這一類。`irq_vector()`
+  回傳真正的向量編號，IRQ 層自己把處理常式掛上去。
+* **集中到單一向量**：GIC 與 Apple AIC 屬於這一類，所有裝置中斷都落在同一個
+  IRQ 例外入口。`irq_vector()` 回傳 `platform::demultiplexed_vector`，IRQ 層
+  就不會去掛向量；那個向量由控制器驅動程式親自佔用，讀取硬體暫存器
+  （GIC 是 `GICC_IAR`，AIC 是 EVENT）問出實際來源，再呼叫 `dispatch()`。
+  這個區別不是形式：如果 IRQ 層照樣為每個 IRQ 掛向量，所有驅動程式都會掛到
+  同一個向量互相覆蓋，還會蓋掉控制器自己的分辨常式。
+
+* **One vector per IRQ**: the 8259A and a later IOAPIC. `irq_vector()` returns
+  a real vector number and the IRQ layer hooks the handler itself.
+* **Funnelled into one vector**: a GIC and Apple's AIC, where every device
+  interrupt lands on the same IRQ exception entry. `irq_vector()` returns
+  `platform::demultiplexed_vector`, so the IRQ layer hooks nothing; the
+  controller driver owns that vector, reads a hardware register — `GICC_IAR`
+  on a GIC, EVENT on the AIC — to learn the real source, and calls
+  `dispatch()`. The distinction is not a formality: were the IRQ layer to hook
+  a vector per IRQ anyway, every driver would land on the same vector and
+  overwrite both each other and the controller's own demultiplexing handler.
+
+編號超出處理常式表範圍的中斷仍然會走完 end-of-interrupt。控制器已經確認過
+這個中斷，不回覆它就會讓控制器永遠停在服務中狀態。
+
+An interrupt numbered past the end of the handler table still receives its
+end-of-interrupt. The controller has already taken it, and leaving it
+unanswered parks the controller in service for good.
 
 ### PIT 計時器 / the PIT timer
 
@@ -301,6 +333,79 @@ consumer (ordinary kernel code); the producer only writes head and the
 consumer only writes tail, so no lock is needed. A full queue drops the new
 character, because the producer must not touch the index the consumer owns.
 
+### ARM64 的 GICv2 與架構計時器 / GICv2 and the architected timer on ARM64
+
+`platform/arm/gicv2.cpp` 是 QEMU virt 兩個 ARM64 平台共用的中斷控制器。
+GICv2 由分配器與 CPU 介面兩塊暫存器組成：分配器決定哪些中斷送給哪個核心，
+CPU 介面是核心確認與結束中斷的窗口。開機時分配器遮罩全部中斷、清掉待處理
+狀態、把所有中斷設成同一個中等優先權，並把 CPU 介面的優先權遮罩設得比它
+寬鬆，中斷才通得過。SPI 設定為位準觸發並指向開機核心；SGI 與 PPI 是核心
+私有的，目標欄位對它們唯讀。
+
+`platform/arm/gicv2.cpp` is the interrupt controller both QEMU virt ARM64
+platforms share. A GICv2 is two register blocks: the distributor decides which
+interrupts go to which core, and the CPU interface is where a core
+acknowledges and finishes one. At boot the distributor masks every interrupt,
+clears any pending state, gives every interrupt the same middle priority, and
+the CPU interface's priority mask is set looser than that so interrupts pass
+at all. SPIs are level-triggered and targeted at the boot core; SGIs and PPIs
+are private to a core, and the target field is read-only for them.
+
+分辨來源的迴圈會一直讀 `GICC_IAR`，直到拿到保留編號為止 —— 1023 代表沒有
+待處理中斷。一次例外可能涵蓋多個待處理中斷，所以不能只取一個就返回；保留
+編號絕對不能送出 end-of-interrupt。
+
+The demultiplexing loop keeps reading `GICC_IAR` until it gets a reserved
+number — 1023 means nothing is pending. One exception can cover several
+pending interrupts, so taking just one and returning is wrong, and a reserved
+number must never be given an end-of-interrupt.
+
+`platform/arm/generic_timer.cpp` 是架構計時器，接在 PPI 30，同樣預設 100 Hz。
+它屬於 CPU 而不是機器，透過 `CNTP_*_EL0` 系統暫存器操作，因此每台 ARM64
+機器都有。它的中斷輸出是位準而不是脈衝，所以處理常式第一件事就是重新設定
+`CNTP_TVAL_EL0`：條件沒有解除的話，處理常式會被無止盡地重新進入。
+
+`platform/arm/generic_timer.cpp` is the architected timer on PPI 30, also at
+100 Hz by default. It belongs to the CPU rather than the machine and is driven
+through the `CNTP_*_EL0` system registers, so every ARM64 machine has one. Its
+interrupt output is a level rather than a pulse, so the first thing the
+handler does is rearm `CNTP_TVAL_EL0`: leaving the condition met would
+re-enter the handler forever.
+
+GIC 的位址目前是 QEMU virt 的編譯期常數，做法與 `platform/apple_silicon` 對
+AIC 基底位址的處理一致。要從裝置樹的中斷控制器節點讀出來，需要
+`platform/firmware/fdt.cpp` 提供通用節點查詢，那還沒有。
+
+The GIC addresses are compile-time constants for QEMU virt today, the same
+approach `platform/apple_silicon` takes for the AIC base. Reading them from
+the device tree's interrupt controller node needs generic node lookup in
+`platform/firmware/fdt.cpp`, which does not exist yet.
+
+### Apple AIC
+
+`platform/apple_silicon/interrupt_controller.cpp` 是 AIC 第 1 版（M1／t8103）
+的完整路徑：遮罩、解除遮罩、確認，並親自掛上 IRQ 例外入口讀取 EVENT 暫存器
+分辨來源。有兩件事值得記住：讀 EVENT 會取走一個事件，因此
+`end_of_interrupt` 刻意不去讀它，取事件只由分辨迴圈負責；另外只有事件種類 1
+（裝置 IRQ）會被分派出去，IPI 與計時器事件用的是其他種類，必須丟掉而不是
+當成 IRQ 交給驅動程式。
+
+`platform/apple_silicon/interrupt_controller.cpp` is a complete AIC version 1
+path for M1 (t8103): mask, unmask, acknowledge, and hooking the IRQ exception
+entry itself to read the EVENT register and identify the source. Two things
+are worth remembering: reading EVENT consumes an event, so `end_of_interrupt`
+deliberately does not read it and only the demultiplexing loop does; and only
+event type 1, a device IRQ, is dispatched, because IPIs and timer events use
+other types and must be dropped rather than handed to a driver as IRQs.
+
+這條路徑從未實際執行過。QEMU 沒有 Apple Silicon 機器模型，暫存器配置來自
+Asahi Linux 公開的說明而非原廠文件，確認中斷的精確語意要等 M8 在實機上驗證。
+
+None of this has ever executed. QEMU has no Apple Silicon machine model, the
+register layout comes from Asahi Linux's published documentation rather than a
+datasheet, and the exact acknowledge semantics need confirming on real
+hardware in M8.
+
 ### 後續的中斷控制器後端 / later interrupt controller backends
 
 以下都會實作成新的平台層後端，`include/shirley/irq.hpp` 的介面不需要改變：
@@ -314,11 +419,11 @@ Each of these becomes a new platform-layer backend behind the unchanged
   在沒有 ACPI 時的退路。
 * MSI/MSI-X：PCIe 裝置直接寫入 Local APIC 的訊息位址來遞送中斷，不再佔用
   IOAPIC 的實體接腳。這需要先有 PCI 設定空間存取，屬於 M5。
-* ARM64：`platform/qemu_arm64` 需要 GICv2 或 GICv3 的分配器與 CPU 介面，
-  Apple Silicon 則使用 `platform/apple_silicon/interrupt_controller.cpp`
-  中的 AIC。兩者都是把中斷集中送到 IRQ 例外入口，再由驅動程式辨識來源，
-  因此接的是 `irq::dispatch()`。ARM64 上與 MSI 對應的機制是 GICv2m 或
-  GICv3 ITS，不是 IOAPIC；IOAPIC 是 x86 專屬的裝置。
+* ARM64：GICv3 的重分配器與系統暫存器 CPU 介面尚未支援，因此目前只能跑在
+  提供 GICv2 相容介面的機器上。Apple Silicon 還缺 AIC 第 2 版（M2 以後的
+  SoC）與架構計時器 —— 後者的中斷編號來自 Apple 裝置樹，屬於 M8。
+  ARM64 上與 MSI 對應的機制是 GICv2m 或 GICv3 ITS，不是 IOAPIC；IOAPIC 是
+  x86 專屬的裝置。
 
 * Local APIC and IOAPIC: take the IOAPIC address and interrupt source
   overrides from the ACPI MADT, route global system interrupt numbers onto
@@ -329,12 +434,12 @@ Each of these becomes a new platform-layer backend behind the unchanged
 * MSI/MSI-X: a PCIe device delivers an interrupt by writing the Local APIC's
   message address directly, occupying no physical IOAPIC pin. This needs PCI
   configuration space access first and belongs to M5.
-* ARM64: `platform/qemu_arm64` needs the distributor and CPU interface of a
-  GICv2 or GICv3, and Apple Silicon uses the AIC in
-  `platform/apple_silicon/interrupt_controller.cpp`. Both funnel interrupts
-  into the IRQ exception entry for a driver to demultiplex, so both attach to
-  `irq::dispatch()`. The ARM64 counterpart of MSI is GICv2m or the GICv3 ITS,
-  not an IOAPIC; an IOAPIC is an x86-only device.
+* ARM64: a GICv3's redistributors and system-register CPU interface are not
+  supported, so today this runs only on a machine offering a GICv2-compatible
+  interface. Apple Silicon still lacks AIC version 2 for M2 and later SoCs,
+  and the architected timer — whose interrupt number comes from the Apple
+  device tree, which belongs to M8. The ARM64 counterpart of MSI is GICv2m or
+  the GICv3 ITS, not an IOAPIC; an IOAPIC is an x86-only device.
 
 ## 目前的開發環境 / Current development environment
 
@@ -551,29 +656,37 @@ platforms. This is the first implementation of the "ShirleyOS Bootloader" step
 of the production boot architecture, so x86_64 no longer depends solely on the
 development BIOS boot sector.
 
-x86_64 的中斷子系統也在本里程碑接通：IDT 之後接上 8259A 啟用用後端、通用
-IRQ 層、PIT 計時器與 PS/2 鍵盤，因此 x86_64 已經有一條完整的中斷驅動輸入
-路徑，閒置時停在 `hlt` 而不是輪詢裝置。詳見「中斷子系統」一節。
+中斷子系統也在本里程碑接通，兩種架構都是。x86_64 的 IDT 之後接上 8259A
+啟用用後端、通用 IRQ 層、PIT 計時器與 PS/2 鍵盤，因此有一條完整的中斷驅動
+輸入路徑，閒置時停在 `hlt` 而不是輪詢裝置。ARM64 在同一個 `shirley::irq`
+介面之下接上 GICv2 與架構計時器（`platform/arm/`），Apple Silicon 則接上
+自家的 AIC。詳見「中斷子系統」一節。
 
-The x86_64 interrupt subsystem is joined up in this milestone too: behind the
-IDT sit the 8259A bring-up backend, the generic IRQ layer, the PIT timer, and
-the PS/2 keyboard, so x86_64 now has a complete interrupt-driven input path
-and idles in `hlt` instead of polling a device. See the interrupt subsystem
-section.
+The interrupt subsystem is joined up in this milestone too, on both
+architectures. Behind x86_64's IDT sit the 8259A bring-up backend, the generic
+IRQ layer, the PIT timer, and the PS/2 keyboard, giving it a complete
+interrupt-driven input path that idles in `hlt` instead of polling a device.
+ARM64 gets a GICv2 and the architected timer in `platform/arm/` behind the
+same `shirley::irq` interface, and Apple Silicon gets its own AIC. See the
+interrupt subsystem section.
 
 本里程碑尚未完成的部分：ARM64 的 MMU 已經實作（`arch::arm64::mmu_enable`）
-但開機時尚未啟用；ARM64 也還沒有中斷控制器驅動程式，因此那一側的裝置 IRQ
-全部維持遮罩狀態，計時器也還沒有。UEFI 載入器面對韌體的那一段只經過審閱，
-尚未實際開機驗證；可以在沒有韌體的情況下測試的部分（ELF 讀取、記憶體地圖
-轉換、交接驗證）則已由 `tests/boot_loader_smoke.cpp` 涵蓋。
+但開機時尚未啟用；ARM64 也還沒有輸入裝置驅動程式，因此中斷驅動的鍵盤目前
+只有 x86_64 有。Apple Silicon 的 AIC 路徑雖然完整，卻從未實際執行過 ——
+QEMU 沒有對應的機器模型 —— 而且它的架構計時器要等 M8 解析 Apple 裝置樹之後
+才能啟用。UEFI 載入器面對韌體的那一段同樣只經過審閱，尚未實際開機驗證；
+可以在沒有韌體的情況下測試的部分（ELF 讀取、記憶體地圖轉換、交接驗證）
+則已由 `tests/boot_loader_smoke.cpp` 涵蓋。
 
 Not yet done in this milestone: the ARM64 MMU is implemented
-(`arch::arm64::mmu_enable`) but not enabled at boot, and ARM64 still has no
-interrupt controller driver, so every device IRQ on that side stays masked and
-there is no timer yet either. The firmware-facing part of the UEFI loader has
+(`arch::arm64::mmu_enable`) but not enabled at boot, and ARM64 has no input
+device driver, so the interrupt-driven keyboard exists only on x86_64. Apple
+Silicon's AIC path is complete but has never executed, because QEMU has no
+matching machine model, and its architected timer waits on the Apple device
+tree parsing in M8. The firmware-facing part of the UEFI loader has likewise
 been reviewed but not yet booted; the parts that can be tested without
-firmware — ELF reading, memory map conversion, handoff validation — are covered
-by `tests/boot_loader_smoke.cpp`.
+firmware — ELF reading, memory map conversion, handoff validation — are
+covered by `tests/boot_loader_smoke.cpp`.
 
 ### M1 — 記憶體與使用者空間 / memory and userspace
 
@@ -591,16 +704,15 @@ execute in userspace.
 
 ### 後續規劃 / Roadmap
 
-M2 ARM64 中斷控制器、搶佔式排程與執行緒（x86_64 的中斷、計時器與鍵盤已在
-M0.5 完成）；M3 行程與 IPC；M4 VFS、initramfs 與 shell；M5 PCI/VirtIO、儲存
-與 MSI/MSI-X；M6 網路；M7 實體 x86_64 PC 啟用與 APIC/IOAPIC；M8 Apple
-Silicon 啟用；M9 GUI 與視窗系統。
+M2 搶佔式排程與執行緒（兩種架構的中斷與計時器都已在 M0.5 完成）；M3 行程與
+IPC；M4 VFS、initramfs 與 shell；M5 PCI/VirtIO、儲存與 MSI/MSI-X；M6 網路；
+M7 實體 x86_64 PC 啟用與 APIC/IOAPIC；M8 Apple Silicon 啟用；M9 GUI 與
+視窗系統。
 
-M2 the ARM64 interrupt controller, preemptive scheduling, and threads (x86_64
-interrupts, timer, and keyboard landed in M0.5); M3 processes and IPC; M4 VFS,
-initramfs, and shell; M5 PCI/VirtIO, storage, and MSI/MSI-X; M6 networking;
-M7 physical x86_64 PC bring-up and APIC/IOAPIC; M8 Apple Silicon bring-up;
-M9 GUI/window system.
+M2 preemptive scheduling and threads (interrupts and a timer landed on both
+architectures in M0.5); M3 processes and IPC; M4 VFS, initramfs, and shell;
+M5 PCI/VirtIO, storage, and MSI/MSI-X; M6 networking; M7 physical x86_64 PC
+bring-up and APIC/IOAPIC; M8 Apple Silicon bring-up; M9 GUI/window system.
 
 ## 程式撰寫理念 / Coding philosophy
 

@@ -33,13 +33,26 @@ boot services, and hands over a validated `BootHandoff`. That makes
 `x86_64_uefi` and `arm64_uefi` the first targets that boot the way the
 production architecture intends, rather than through a development loader.
 
-x86_64 also has a working interrupt subsystem: a 256-entry IDT, the 8259A as
-its bring-up interrupt controller backend, a generic `shirley::irq` layer that
-device drivers use instead of touching a controller, a 100 Hz PIT on IRQ0, and
-an interrupt-driven PS/2 keyboard on IRQ1 whose characters are echoed to the
-console and queued as standard input. The kernel idles in `hlt` and polls
-nothing. ARM64 still has no interrupt controller driver, so its device IRQs
-stay masked.
+x86_64 also has a working interrupt subsystem end to end: a 256-entry IDT, the
+8259A as its bring-up interrupt controller backend, a generic `shirley::irq`
+layer that device drivers use instead of touching a controller, a 100 Hz PIT on
+IRQ0, and an interrupt-driven PS/2 keyboard on IRQ1 whose characters are echoed
+to the console and queued as standard input. The kernel idles in `hlt` and
+polls nothing.
+
+ARM64 now has the same subsystem behind the same `shirley::irq` interface. Its
+controllers demultiplex rather than giving each IRQ its own vector: every
+device interrupt arrives on the one IRQ exception entry, and the controller
+driver identifies the source and dispatches it. `platform/arm/` holds what ARM
+defines rather than any one machine — a GICv2 driver and the architected timer
+on PPI 30, the ARM counterpart of `platform/pc/` — and `qemu_arm64` and
+`qemu_arm64_uefi` both run a 100 Hz timer through it.
+
+Apple Silicon uses its own AIC in `platform/apple_silicon/` instead, which is
+now a complete path rather than just register access. It has still never been
+executed: QEMU has no Apple Silicon machine model, so that target is built and
+reviewed but not booted, and its register layout comes from Asahi Linux's
+published documentation rather than a datasheet.
 
 See [OS_SPEC.md](OS_SPEC.md) for the architectural source of truth and
 roadmap.

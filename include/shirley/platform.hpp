@@ -32,8 +32,24 @@ const Capabilities& capabilities();
 void enable_irq(Irq);
 void disable_irq(Irq);
 void end_of_interrupt(Irq);
-// 將平台 IRQ 對應到架構中斷向量。
-// Map a platform IRQ onto an architecture interrupt vector.
+// 中斷控制器把所有裝置中斷集中到單一架構向量時，irq_vector() 回傳這個值。
+// GIC 與 Apple AIC 屬於這一類：由控制器驅動程式自己掛上那個向量、辨識來源，
+// 再呼叫 irq::dispatch()。此時 IRQ 層絕對不能自行註冊向量處理常式，否則每個
+// IRQ 都會掛到同一個向量互相覆蓋，還會蓋掉控制器的分辨常式。
+//
+// What irq_vector() returns when the interrupt controller funnels every device
+// interrupt into a single architecture vector. A GIC and Apple's AIC are of
+// this kind: the controller driver hooks that vector itself, identifies the
+// source, and calls irq::dispatch(). The IRQ layer must not register a vector
+// handler of its own in that case, or every IRQ would land on the same vector,
+// overwriting both each other and the controller's demultiplexing handler.
+constexpr unsigned demultiplexed_vector = ~0u;
+
+// 將平台 IRQ 對應到架構中斷向量；控制器自行分辨來源時回傳
+// demultiplexed_vector。
+//
+// Map a platform IRQ onto an architecture interrupt vector, or
+// demultiplexed_vector when the controller identifies the source itself.
 unsigned irq_vector(Irq);
 // 這次中斷是否為控制器的假中斷（spurious）。8259A 在中斷訊號於確認週期前
 // 消失時，仍會送出 IRQ7 或 IRQ15；這種中斷不可以執行處理常式，也不可以送出
