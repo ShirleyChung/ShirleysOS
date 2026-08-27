@@ -2,6 +2,7 @@
 
 #include "shirley/console.hpp"
 #include "shirley/format.hpp"
+#include "shirley/syscall.hpp"
 
 namespace shirley::arch::arm64 {
 namespace {
@@ -101,6 +102,18 @@ void exception_unregister(unsigned vector) {
 extern "C" void arm64_exception_dispatch(shirley::arch::arm64::ExceptionFrame* frame) {
     using namespace shirley::arch::arm64;
     const auto vector = frame->vector;
+    // A lower-EL synchronous exception is the SVC syscall entry. Use ESR's
+    // exception class as the authoritative check; it remains correct even if
+    // firmware or a vector-table diagnostic reports an adjacent slot.
+    if (((frame->esr >> 26) & 0x3f) == 0x15) {
+        shirley::syscall::Context context{
+            frame->x[8],
+            {frame->x[0], frame->x[1], frame->x[2]},
+            -1};
+        shirley::syscall::dispatch(context);
+        frame->x[0] = static_cast<std::uint64_t>(context.result);
+        return;
+    }
     if (vector < vector_table_size && handlers[vector] != nullptr) {
         handlers[vector](static_cast<unsigned>(vector), contexts[vector]);
         return;

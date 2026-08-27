@@ -3,6 +3,7 @@ SECTIONS {
   /* 開機磁區把核心讀到 0x10000，並直接跳到映像的第一個位元組。 */
   /* The boot sector loads the kernel at 0x10000 and jumps to its first byte. */
   . = 0x10000;
+  __kernel_start = .;
   .text : { *(.text.boot) *(.text*) }
   .rodata : { *(.rodata*) }
   .data : { *(.data*) }

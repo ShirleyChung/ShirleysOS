@@ -70,7 +70,8 @@ std::uint64_t* descend(std::uint64_t* table, std::size_t index, bool create) {
 std::uint64_t translate_flags(memory::PageFlags flags) {
     const bool user = contains(flags, memory::PageFlags::User);
     const bool writable = contains(flags, memory::PageFlags::Write);
-    std::uint64_t value = descriptor_page | access_flag | inner_shareable | attribute_index_normal;
+    const auto attribute = contains(flags, memory::PageFlags::Device) ? 0ull : attribute_index_normal;
+    std::uint64_t value = descriptor_page | access_flag | inner_shareable | attribute;
     if (user)
         value |= writable ? access_read_write_el0 : access_read_only_el0;
     else

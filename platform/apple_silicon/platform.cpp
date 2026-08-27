@@ -6,9 +6,9 @@
 #include "shirley/console.hpp"
 
 namespace shirley::platform {
-namespace {
-
 Capabilities platform_capabilities{};
+
+namespace {
 
 // M1（t8103）的固定周邊位址。實體機型會由 Apple device tree 提供，
 // 解析該格式排在 M8；在此之前先以已知的預設值運作。
@@ -33,12 +33,10 @@ void initialize(const BootInfo& boot_info) {
     // the controller. Which interrupt number it uses on an Apple SoC comes
     // from the Apple device tree, whose format is parsed in M8, so the timer
     // is not brought up here yet.
-    platform_capabilities = {
-        .serial_console = true,
-        .interrupt_controller = controller,
-        .timer = false,
-        .framebuffer = boot_info.framebuffer.address != 0,
-    };
+    platform_capabilities.serial_console = true;
+    platform_capabilities.interrupt_controller = controller;
+    platform_capabilities.timer = false;
+    platform_capabilities.framebuffer = boot_info.framebuffer.address != 0;
 }
 
 const char* name() { return "Apple Silicon"; }

@@ -1,2 +1,10 @@
-/* ARM64 SVC/EL0 系統呼叫 ABI 的預留實作位置。 */
-/* Placeholder for the ARM64 SVC/EL0 system call ABI. */
+/* long long shirley_syscall(long long number, ...); */
+.text
+.global shirley_syscall
+shirley_syscall:
+    mov x8, x0
+    mov x0, x1
+    mov x1, x2
+    mov x2, x3
+    svc #0
+    ret

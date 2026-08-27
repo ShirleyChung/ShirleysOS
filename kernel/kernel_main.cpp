@@ -7,6 +7,7 @@
 #include "shirley/memory.hpp"
 #include "shirley/platform.hpp"
 #include "shirley/scheduler.hpp"
+#include "shirley/user_loader.hpp"
 
 namespace {
 
@@ -85,7 +86,9 @@ extern "C" [[noreturn]] void kernel_main(const shirley::BootInfo* boot_info) {
     if (timer_rate != 0) write_count("Timer: ", timer_rate, " Hz\n");
     if (shirley::io::standard_input() != nullptr)
         shirley::console::write("Keyboard: type to echo through the interrupt path\n");
-    shirley::console::write("Hello! Shirley's OS.\n");
+    shirley::console::write("Launching user hello...\n");
+    if (!shirley::user::launch_embedded())
+        shirley::console::write("[USER] failed to load embedded hello ELF\n");
 
     // 尚未有可執行的工作，因此閒置等待下一個中斷，而不是輪詢任何裝置。
     // 計時器中斷本身不輸出任何訊息，但滿一秒時回報一次，證明 IRQ0 會反覆

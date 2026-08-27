@@ -17,6 +17,7 @@ enum class PageFlags : std::uint32_t {
     Write = 1u << 1,
     Execute = 1u << 2,
     User = 1u << 3,
+    Device = 1u << 4,
 };
 
 // 讓權限旗標可以像位元遮罩一樣組合與查詢。

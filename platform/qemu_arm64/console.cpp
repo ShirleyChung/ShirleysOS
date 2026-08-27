@@ -1,6 +1,6 @@
 #include "shirley/console.hpp"
 
-namespace shirley::console {
+namespace shirley::platform::qemu_arm64 {
 namespace {
 
 // QEMU virt 平台上的 PL011 UART 基底位址。
@@ -31,7 +31,9 @@ void put(char value) {
 
 // 設定 UART 為可傳送字元的基本模式。
 // Put the UART into the minimal state needed to send characters.
-void initialize() {
+class Pl011Console final : public console::Backend {
+public:
+void initialize() override {
     uart[control] = 0;
     uart[line_control] = eight_bits;
     uart[control] = enable;
@@ -40,7 +42,7 @@ void initialize() {
 // 等待 UART 有空間後逐字輸出；換行時補上回車符。
 // Wait for room in the FIFO, then send each character, prefixing a carriage
 // return before each newline.
-void write(const char* text, std::size_t length) {
+void write(const char* text, std::size_t length) override {
     for (std::size_t i = 0; i < length; ++i) {
         if (text[i] == '\n') put('\r');
         put(text[i]);
@@ -49,11 +51,12 @@ void write(const char* text, std::size_t length) {
 
 // 計算字串長度後交給長度版本輸出。
 // Measure the string, then hand it to the length-taking overload.
-void write(const char* text) {
-    if (text == nullptr) return;
-    std::size_t length = 0;
-    while (text[length] != '\0') ++length;
-    write(text, length);
-}
+};
 
+Pl011Console pl011_console;
+
+} // namespace shirley::platform::qemu_arm64
+
+namespace shirley::console {
+Backend* default_backend() { return &platform::qemu_arm64::pl011_console; }
 } // namespace shirley::console

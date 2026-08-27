@@ -6,7 +6,7 @@
 // 因此這個主控台由所有 PC 平台共用。
 // Every IBM-PC-compatible machine has COM1 regardless of whether its firmware
 // is a BIOS or UEFI, so this console is shared by all PC platforms.
-namespace shirley::console {
+namespace shirley::platform::pc {
 namespace {
 
 using arch::x86_64::inb;
@@ -39,7 +39,9 @@ void put(char value) {
 
 // 設定 COM1 的鮑率、資料格式與 FIFO。
 // Configure COM1's baud rate, framing, and FIFOs.
-void initialize() {
+class SerialConsole final : public console::Backend {
+public:
+void initialize() override {
     outb(interrupt_enable, 0x00);
     outb(line_control, divisor_latch);
     // 除數 3 對應 38400 鮑率。
@@ -57,7 +59,7 @@ void initialize() {
 
 // 將字元送到 COM1；換行時先送回車符。
 // Send characters to COM1, prefixing a carriage return before each newline.
-void write(const char* text, std::size_t length) {
+void write(const char* text, std::size_t length) override {
     for (std::size_t i = 0; i < length; ++i) {
         if (text[i] == '\n') put('\r');
         put(text[i]);
@@ -66,11 +68,12 @@ void write(const char* text, std::size_t length) {
 
 // 計算 null 結尾字串長度後輸出。
 // Measure a null-terminated string, then write it.
-void write(const char* text) {
-    if (text == nullptr) return;
-    std::size_t length = 0;
-    while (text[length] != '\0') ++length;
-    write(text, length);
-}
+};
 
+SerialConsole serial_console;
+
+} // namespace shirley::platform::pc
+
+namespace shirley::console {
+Backend* default_backend() { return &platform::pc::serial_console; }
 } // namespace shirley::console

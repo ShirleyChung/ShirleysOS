@@ -26,6 +26,7 @@ public:
     bool map(memory::VirtualAddress, memory::PhysicalAddress, memory::PageFlags) override;
     bool unmap(memory::VirtualAddress) override;
     memory::PhysicalAddress translate(memory::VirtualAddress) const override;
+    memory::PhysicalAddress root() const { return root_; }
 
     // 可直接寫入 TTBR0_EL1 的 handle；尚未初始化時為 0。
     // A handle that can be written straight to TTBR0_EL1; 0 before init.

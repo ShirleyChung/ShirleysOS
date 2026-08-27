@@ -8,12 +8,11 @@
 #include "shirley/platform/pc/ps2_keyboard.hpp"
 
 namespace shirley::platform {
+Capabilities platform_capabilities{};
 namespace {
 
 using arch::x86_64::outb;
 using arch::x86_64::outw;
-
-Capabilities platform_capabilities{};
 
 // QEMU 的 ACPI 電源管理暫存器；i440FX 與 Q35 使用不同的 I/O port。
 // QEMU's ACPI power management register; i440FX and Q35 use different ports.
@@ -41,12 +40,10 @@ void initialize(const BootInfo& boot_info) {
     // arch::enable_interrupts().
     const bool timer = pc::pit_initialize(pc::pit_default_frequency);
     pc::ps2_keyboard_initialize();
-    platform_capabilities = {
-        .serial_console = true,
-        .interrupt_controller = true,
-        .timer = timer,
-        .framebuffer = boot_info.framebuffer.address != 0,
-    };
+    platform_capabilities.serial_console = true;
+    platform_capabilities.interrupt_controller = true;
+    platform_capabilities.timer = timer;
+    platform_capabilities.framebuffer = boot_info.framebuffer.address != 0;
 }
 
 const char* name() { return "QEMU x86_64"; }

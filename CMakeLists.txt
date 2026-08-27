@@ -42,6 +42,12 @@ message(STATUS "ShirleyOS architecture=${SHIRLEY_ARCH} platform=${SHIRLEY_PLATFO
 # 與架構、平台都無關的核心程式碼。
 # Kernel code that depends on neither the architecture nor the platform.
 set(SHIRLEY_KERNEL_SOURCES
+  kernel/console/console.cpp
+  boot/common/elf64.cpp
+  kernel/elf/user_loader.cpp
+  kernel/elf/user_image.cpp
+  kernel/user/launch.cpp
+  kernel/syscall/syscall.cpp
   kernel/kernel_main.cpp
   kernel/format/number.cpp
   kernel/interrupt/irq.cpp
@@ -70,6 +76,9 @@ if(SHIRLEY_ARCH STREQUAL host)
   # The host target builds only the architecture-neutral pieces that can be
   # tested on the development machine.
   add_library(shirley-kernel-core STATIC
+    kernel/console/console.cpp
+    kernel/elf/user_loader.cpp
+    kernel/syscall/syscall.cpp
     kernel/format/number.cpp
     kernel/io/input_queue.cpp
     kernel/io/standard_streams.cpp
@@ -83,6 +92,7 @@ if(SHIRLEY_ARCH STREQUAL host)
     ${SHIRLEY_FIRMWARE_APPLE}
     ${SHIRLEY_FIRMWARE_UEFI})
   target_include_directories(shirley-kernel-core PUBLIC include)
+  target_compile_definitions(shirley-kernel-core PRIVATE SHIRLEY_HOST)
 
   enable_testing()
   foreach(test host_smoke core_services_smoke platform_model_smoke boot_loader_smoke input_smoke)
@@ -139,6 +149,66 @@ elseif(SHIRLEY_ARCH STREQUAL arm64)
 else()
   message(FATAL_ERROR "Unknown SHIRLEY_ARCH: ${SHIRLEY_ARCH}")
 endif()
+
+# 最小 user 程式以靜態 ELF 形式建置，只連接 ShirleyOS libc 與 syscall trampoline。
+# Build the minimal user program as a static ELF, linking only ShirleyOS libc
+# and the architecture syscall trampoline.
+if(SHIRLEY_ARCH STREQUAL x86_64)
+  set(SHIRLEY_USER_TARGET x86_64-none-elf)
+  set(SHIRLEY_USER_START ${CMAKE_SOURCE_DIR}/libc/src/start_x86_64.S)
+  set(SHIRLEY_USER_LINKER ${CMAKE_SOURCE_DIR}/user/hello/x86_64.ld)
+  set(SHIRLEY_USER_SYSCALL ${CMAKE_SOURCE_DIR}/libc/arch/x86_64/syscall.S)
+else()
+  set(SHIRLEY_USER_TARGET aarch64-none-elf)
+  set(SHIRLEY_USER_START ${CMAKE_SOURCE_DIR}/libc/src/start_arm64.S)
+  set(SHIRLEY_USER_LINKER ${CMAKE_SOURCE_DIR}/user/hello/arm64.ld)
+  set(SHIRLEY_USER_SYSCALL ${CMAKE_SOURCE_DIR}/libc/arch/arm64/syscall.S)
+endif()
+
+set(SHIRLEY_USER_DIR ${CMAKE_CURRENT_BINARY_DIR}/user-hello)
+set(SHIRLEY_USER_OBJECTS)
+foreach(source
+    ${CMAKE_SOURCE_DIR}/user/hello/main.c
+    ${CMAKE_SOURCE_DIR}/libc/src/stdio/printf.c
+    ${CMAKE_SOURCE_DIR}/libc/src/unistd/write.c
+    ${SHIRLEY_USER_START}
+    ${SHIRLEY_USER_SYSCALL})
+  get_filename_component(stem ${source} NAME_WE)
+  get_filename_component(extension ${source} EXT)
+  set(object ${SHIRLEY_USER_DIR}/${stem}${extension}.o)
+  add_custom_command(OUTPUT ${object}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${SHIRLEY_USER_DIR}
+    COMMAND ${CMAKE_C_COMPILER} --target=${SHIRLEY_USER_TARGET}
+            -ffreestanding -fno-builtin -fno-stack-protector -fno-pic
+            -I${CMAKE_SOURCE_DIR}/libc/include
+            -c ${source} -o ${object}
+    DEPENDS ${source})
+  list(APPEND SHIRLEY_USER_OBJECTS ${object})
+endforeach()
+
+set(SHIRLEY_USER_ELF ${SHIRLEY_USER_DIR}/hello.elf)
+add_custom_command(OUTPUT ${SHIRLEY_USER_ELF}
+  COMMAND ${SHIRLEY_LLD} -T ${SHIRLEY_USER_LINKER} --build-id=none
+          -o ${SHIRLEY_USER_ELF} ${SHIRLEY_USER_OBJECTS}
+  DEPENDS ${SHIRLEY_USER_OBJECTS} ${SHIRLEY_USER_LINKER})
+add_custom_target(shirley-user-hello ALL DEPENDS ${SHIRLEY_USER_ELF})
+
+if(SHIRLEY_ARCH STREQUAL x86_64)
+  set(SHIRLEY_USER_IMAGE_FORMAT elf64-x86-64)
+  set(SHIRLEY_USER_IMAGE_ARCH i386:x86-64)
+else()
+  set(SHIRLEY_USER_IMAGE_FORMAT elf64-littleaarch64)
+  set(SHIRLEY_USER_IMAGE_ARCH aarch64)
+endif()
+set(SHIRLEY_USER_IMAGE_OBJECT ${SHIRLEY_USER_DIR}/hello.elf.o)
+add_custom_command(OUTPUT ${SHIRLEY_USER_IMAGE_OBJECT}
+  COMMAND ${CMAKE_COMMAND} -E chdir ${CMAKE_CURRENT_BINARY_DIR} ${SHIRLEY_OBJCOPY}
+          --input-target=binary
+          --output-target=${SHIRLEY_USER_IMAGE_FORMAT}
+          --binary-architecture=${SHIRLEY_USER_IMAGE_ARCH}
+          user-hello/hello.elf user-hello/hello.elf.o
+  DEPENDS ${SHIRLEY_USER_ELF})
+add_custom_target(shirley-user-image DEPENDS ${SHIRLEY_USER_IMAGE_OBJECT})
 
 # 平台層原始碼；每個平台自行決定要使用哪些韌體格式與共用裝置驅動程式。
 # Platform layer sources; each platform picks the firmware formats and shared
@@ -216,6 +286,11 @@ endif()
 
 add_library(shirley-kernel-objects OBJECT
   ${SHIRLEY_KERNEL_SOURCES} ${SHIRLEY_ARCH_SOURCES} ${SHIRLEY_PLATFORM_SOURCES})
+if(SHIRLEY_ARCH STREQUAL x86_64)
+  target_compile_definitions(shirley-kernel-objects PRIVATE SHIRLEY_ARCH_X86_64)
+else()
+  target_compile_definitions(shirley-kernel-objects PRIVATE SHIRLEY_ARCH_ARM64)
+endif()
 target_include_directories(shirley-kernel-objects PRIVATE
   kernel/freestanding include arch/${SHIRLEY_ARCH} platform/${SHIRLEY_PLATFORM})
 target_compile_options(shirley-kernel-objects PRIVATE
@@ -224,11 +299,13 @@ target_compile_options(shirley-kernel-objects PRIVATE
 add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/shirley-kernel.elf
   COMMAND ${SHIRLEY_LLD} -T ${SHIRLEY_LINKER_SCRIPT} --build-id=none
           -o ${CMAKE_CURRENT_BINARY_DIR}/shirley-kernel.elf $<TARGET_OBJECTS:shirley-kernel-objects>
+          ${SHIRLEY_USER_IMAGE_OBJECT}
   # 目標名稱只建立順序相依；要讓物件檔更新後真的重新連結，
   # 必須把物件檔本身也列為相依。
   # The target name only creates an ordering dependency; the object files
   # themselves must be listed so an updated object actually relinks.
   DEPENDS shirley-kernel-objects $<TARGET_OBJECTS:shirley-kernel-objects>
+          ${SHIRLEY_USER_IMAGE_OBJECT}
           ${SHIRLEY_LINKER_SCRIPT}
   COMMAND_EXPAND_LISTS)
 add_custom_target(shirley-kernel ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/shirley-kernel.elf)

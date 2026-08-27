@@ -2,7 +2,9 @@
 
 #include "internal.hpp"
 
-namespace shirley::console {
+namespace shirley::platform::apple {
+std::uintptr_t uart_base = 0x235200000ull;
+
 namespace {
 
 // Apple Silicon 的除錯序列埠是 Samsung S5L 系列 UART 的衍生版本，
@@ -28,8 +30,6 @@ constexpr std::uintptr_t transmit = 0x20;
 // Bit 2 of UTRSTAT means the transmitter has drained.
 constexpr std::uint32_t transmitter_empty = 1u << 2;
 
-std::uintptr_t uart_base = default_uart_base;
-
 volatile std::uint32_t* uart_register(std::uintptr_t offset) {
     return reinterpret_cast<volatile std::uint32_t*>(uart_base + offset);
 }
@@ -44,7 +44,9 @@ void put(char value) {
 // iBoot 已經設定好鮑率，這裡只確認 8N1 格式並開啟收發器。
 // iBoot has already set the baud rate, so this only confirms 8N1 framing and
 // enables the transmitter and receiver.
-void initialize() {
+class AppleUartConsole final : public console::Backend {
+public:
+void initialize() override {
     *uart_register(line_control) = 0x03;
     *uart_register(fifo_control) = 0x00;
     *uart_register(control) = 0x05;
@@ -52,7 +54,7 @@ void initialize() {
 
 // 送出字元；換行時先送回車符。
 // Send characters, prefixing a carriage return before each newline.
-void write(const char* text, std::size_t length) {
+void write(const char* text, std::size_t length) override {
     for (std::size_t i = 0; i < length; ++i) {
         if (text[i] == '\n') put('\r');
         put(text[i]);
@@ -61,13 +63,14 @@ void write(const char* text, std::size_t length) {
 
 // 計算 null 結尾字串長度後輸出。
 // Measure a null-terminated string, then write it.
-void write(const char* text) {
-    if (text == nullptr) return;
-    std::size_t length = 0;
-    while (text[length] != '\0') ++length;
-    write(text, length);
-}
+};
 
+AppleUartConsole apple_uart_console;
+
+} // namespace shirley::platform::apple
+
+namespace shirley::console {
+Backend* default_backend() { return &platform::apple::apple_uart_console; }
 } // namespace shirley::console
 
 namespace shirley::platform::apple {
@@ -76,7 +79,7 @@ namespace shirley::platform::apple {
 // Lets the platform layer switch to the real UART address once it has parsed
 // the firmware data.
 void console_set_uart_base(std::uintptr_t base) {
-    if (base != 0) ::shirley::console::uart_base = base;
+    if (base != 0) uart_base = base;
 }
 
 } // namespace shirley::platform::apple

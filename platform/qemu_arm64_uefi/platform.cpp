@@ -7,9 +7,8 @@
 #include "shirley/platform/arm/gicv2.hpp"
 
 namespace shirley::platform {
-namespace {
-
 Capabilities platform_capabilities{};
+namespace {
 
 // 同一台 QEMU virt，只是換成 UEFI 韌體，因此 GICv2 位址與 BIOS 路徑相同。
 // The same QEMU virt machine with UEFI firmware instead, so the GICv2 sits at
@@ -38,15 +37,13 @@ void initialize(const BootInfo& boot_info) {
     console::write(controller ? "[IRQ] GICv2 initialized\n"
                               : "[IRQ] no GICv2 found; device interrupts stay masked\n");
     const bool timer = controller && arm::generic_timer_initialize(arm::generic_timer_default_frequency);
-    platform_capabilities = {
-        .serial_console = true,
-        .interrupt_controller = controller,
-        .timer = timer,
+    platform_capabilities.serial_console = true;
+    platform_capabilities.interrupt_controller = controller;
+    platform_capabilities.timer = timer;
         // UEFI 的 GOP framebuffer 由開機載入器記錄在開機資訊中。
         // The UEFI GOP framebuffer is recorded in the boot information by the
         // boot loader.
-        .framebuffer = boot_info.framebuffer.address != 0,
-    };
+    platform_capabilities.framebuffer = boot_info.framebuffer.address != 0;
 }
 
 const char* name() { return "QEMU ARM64 (UEFI)"; }

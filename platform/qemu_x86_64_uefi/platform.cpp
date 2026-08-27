@@ -8,12 +8,11 @@
 #include "shirley/platform/pc/ps2_keyboard.hpp"
 
 namespace shirley::platform {
+Capabilities platform_capabilities{};
 namespace {
 
 using arch::x86_64::outb;
 using arch::x86_64::outw;
-
-Capabilities platform_capabilities{};
 
 // QEMU 的 ACPI 電源管理暫存器；OVMF 預設使用的 i440FX 與 Q35 各有一個 port。
 // QEMU's ACPI power management register; the i440FX and Q35 machines OVMF runs
@@ -40,15 +39,13 @@ void initialize(const BootInfo& boot_info) {
     // of inheriting whatever survived ExitBootServices.
     const bool timer = pc::pit_initialize(pc::pit_default_frequency);
     pc::ps2_keyboard_initialize();
-    platform_capabilities = {
-        .serial_console = true,
-        .interrupt_controller = true,
-        .timer = timer,
+    platform_capabilities.serial_console = true;
+    platform_capabilities.interrupt_controller = true;
+    platform_capabilities.timer = timer;
         // UEFI 的 GOP framebuffer 由開機載入器記錄在開機資訊中。
         // The UEFI GOP framebuffer is recorded in the boot information by the
         // boot loader.
-        .framebuffer = boot_info.framebuffer.address != 0,
-    };
+    platform_capabilities.framebuffer = boot_info.framebuffer.address != 0;
 }
 
 const char* name() { return "QEMU x86_64 (UEFI)"; }

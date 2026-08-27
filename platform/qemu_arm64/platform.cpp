@@ -7,9 +7,9 @@
 #include "shirley/platform/arm/gicv2.hpp"
 
 namespace shirley::platform {
-namespace {
-
 Capabilities platform_capabilities{};
+
+namespace {
 
 // QEMU virt 的 GICv2 固定在這兩個位址。實體機器應該從裝置樹的中斷控制器
 // 節點讀出來，但目前的裝置樹解析器只認得 /memory；加入通用節點查詢之前，
@@ -46,12 +46,10 @@ void initialize(const BootInfo& boot_info) {
     // The timer comes up after the controller, because unmasking PPI 30 is the
     // distributor's job.
     const bool timer = controller && arm::generic_timer_initialize(arm::generic_timer_default_frequency);
-    platform_capabilities = {
-        .serial_console = true,
-        .interrupt_controller = controller,
-        .timer = timer,
-        .framebuffer = boot_info.framebuffer.address != 0,
-    };
+    platform_capabilities.serial_console = true;
+    platform_capabilities.interrupt_controller = controller;
+    platform_capabilities.timer = timer;
+    platform_capabilities.framebuffer = boot_info.framebuffer.address != 0;
 }
 
 const char* name() { return "QEMU ARM64"; }

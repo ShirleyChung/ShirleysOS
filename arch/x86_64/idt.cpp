@@ -2,6 +2,7 @@
 
 #include "shirley/console.hpp"
 #include "shirley/format.hpp"
+#include "shirley/syscall.hpp"
 
 namespace shirley::arch::x86_64 {
 namespace {
@@ -85,7 +86,9 @@ void set_gate(unsigned vector, std::uint64_t handler) {
     gates[vector].offset_low = static_cast<std::uint16_t>(handler);
     gates[vector].selector = kernel_code_selector;
     gates[vector].ist = 0;
-    gates[vector].flags = 0x8e;
+    // Vector 0x80 is the temporary user syscall entry and must be callable
+    // from ring 3; all hardware and exception vectors remain ring 0 only.
+    gates[vector].flags = vector == 0x80 ? 0xee : 0x8e;
     gates[vector].offset_mid = static_cast<std::uint16_t>(handler >> 16);
     gates[vector].offset_high = static_cast<std::uint32_t>(handler >> 32);
     gates[vector].reserved = 0;
@@ -129,6 +132,15 @@ extern "C" void x86_64_interrupt_dispatch(shirley::arch::x86_64::InterruptFrame*
     using namespace shirley::arch;
     using namespace shirley::arch::x86_64;
     const auto vector = frame->vector;
+    if (vector == 0x80) {
+        shirley::syscall::Context context{
+            frame->rax,
+            {frame->rdi, frame->rsi, frame->rdx},
+            -1};
+        shirley::syscall::dispatch(context);
+        frame->rax = static_cast<std::uint64_t>(context.result);
+        return;
+    }
     if (vector < vector_count && handlers[vector] != nullptr) {
         handlers[vector](static_cast<unsigned>(vector), contexts[vector]);
         return;
