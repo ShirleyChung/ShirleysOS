@@ -1,0 +1,10 @@
+Welcome to ShirleyOS.
+
+The prompt below is a real shell: it reads keystrokes that arrived through an
+interrupt, and every path it prints comes from a mounted file system.
+
+Try:
+    ls /            list the root directory
+    ls /docs        list one directory
+    cat /etc/motd   print this file again
+    help            every command the shell knows

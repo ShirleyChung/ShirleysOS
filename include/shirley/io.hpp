@@ -45,4 +45,27 @@ Result write_standard_error(const void* buffer, std::size_t length);
 // Point standard output and standard error at the platform console.
 void initialize_console_streams();
 
+// 所有輸入裝置共用的字元佇列。一台機器可能同時有鍵盤與序列埠，兩者都應該
+// 能驅動同一個 shell，因此驅動程式把解碼後的字元推進這裡，而不是各自維護
+// 一條輸入路徑。回顯不在這一層：那是行編輯器的職責。
+//
+// The character queue every input device shares. A machine can have both a
+// keyboard and a serial port, and either should be able to drive the same
+// shell, so a driver pushes its decoded characters here instead of keeping an
+// input path of its own. Echo does not belong at this layer; it is the line
+// editor's job.
+class InputQueue;
+InputQueue& console_input();
+// 由中斷處理常式呼叫；佇列已滿時捨棄字元並回傳 false。
+// Called from an interrupt handler; a full queue drops the character and
+// returns false.
+bool console_input_push(char value);
+// 把標準輸入接到共用佇列。輸入裝置驅動程式初始化成功後呼叫，因為在那之前
+// 沒有任何東西會把字元推進來，標準輸入應該維持未設定。
+//
+// Point standard input at the shared queue. An input driver calls this once it
+// is up, because until then nothing pushes characters and standard input
+// should stay unset.
+void attach_console_input();
+
 } // namespace shirley::io

@@ -6,6 +6,7 @@
 #include "shirley/platform/pc/pic.hpp"
 #include "shirley/platform/pc/pit.hpp"
 #include "shirley/platform/pc/ps2_keyboard.hpp"
+#include "shirley/platform/pc/serial.hpp"
 
 namespace shirley::platform {
 Capabilities platform_capabilities{};
@@ -39,6 +40,10 @@ void initialize(const BootInfo& boot_info) {
     // of inheriting whatever survived ExitBootServices.
     const bool timer = pc::pit_initialize(pc::pit_default_frequency);
     pc::ps2_keyboard_initialize();
+    // 序列埠終端機和鍵盤一樣是主控台輸入來源；兩者共用同一個佇列。
+    // A serial terminal is as much a console input source as the keyboard is,
+    // and both share the same queue.
+    pc::serial_input_initialize();
     platform_capabilities.serial_console = true;
     platform_capabilities.interrupt_controller = true;
     platform_capabilities.timer = timer;
@@ -57,6 +62,15 @@ void disable_irq(Irq irq) { pc::pic_mask(irq); }
 void end_of_interrupt(Irq irq) { pc::pic_end_of_interrupt(irq); }
 unsigned irq_vector(Irq irq) { return pc::base_vector + irq; }
 bool spurious_interrupt(Irq irq) { return pc::pic_spurious(irq); }
+
+// 和 BIOS 路徑一樣，這裡的裝置都在 I/O port 上；port I/O 不經過分頁表，
+// 因此沒有任何區段需要在 user 位址空間裡映射。
+//
+// As on the non-UEFI path, these devices live behind I/O ports, and port I/O
+// does not go through the page tables, so nothing has to be mapped into a user
+// address space.
+std::size_t mmio_region_count() { return 0; }
+MmioRegion mmio_region(std::size_t) { return {}; }
 
 std::uint64_t timer_ticks() { return pc::pit_ticks(); }
 unsigned timer_frequency() { return pc::pit_frequency(); }

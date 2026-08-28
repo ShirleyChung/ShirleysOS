@@ -2,6 +2,9 @@
 
 #include "shirley/boot_info.hpp"
 
+#include <cstddef>
+#include <cstdint>
+
 namespace shirley::platform {
 
 // 平台層的裝置中斷編號，與架構的中斷向量編號分開。
@@ -69,6 +72,39 @@ bool spurious_interrupt(Irq);
 // simply test timer_frequency() against zero.
 std::uint64_t timer_ticks();
 unsigned timer_frequency();
+
+// 核心在其他位址空間執行時仍然會碰到的裝置記憶體。
+//
+// 進入 user 空間會換上 user 的分頁表，但核心並沒有因此停止使用硬體：中斷
+// 隨時可能送達，處理常式會去讀中斷控制器，主控台也還要能輸出。這些裝置的
+// MMIO 因此必須存在於每一個位址空間裡，否則第一個在 user 空間收到的中斷會
+// 變成一次 data abort。哪些位址屬於這一類只有平台自己知道，所以由平台列出，
+// 而不是讓通用程式碼寫死位址。
+//
+// 只使用 port I/O 的平台（PC 的 8259A、PIT、COM1 都是）沒有這種區段，回報
+// 零個即可。
+//
+// The device memory the kernel still touches while another address space is
+// active.
+//
+// Entering userspace switches to the user's page tables, but the kernel does
+// not stop using hardware: an interrupt can arrive at any moment, its handler
+// reads the interrupt controller, and the console still has to print. That
+// MMIO therefore has to exist in every address space, or the first interrupt
+// taken in userspace becomes a data abort. Only the platform knows which
+// addresses those are, so the platform lists them instead of generic code
+// hard-coding them.
+//
+// A platform whose devices are behind port I/O — the PC's 8259A, PIT, and COM1
+// all are — has no such region and reports zero.
+struct MmioRegion {
+    std::uintptr_t base = 0;
+    std::size_t bytes = 0;
+};
+std::size_t mmio_region_count();
+// index 超出範圍時回傳長度為 0 的區段。
+// An index past the end returns a region of zero length.
+MmioRegion mmio_region(std::size_t index);
 
 // 平台電源控制；韌體不支援時退回停機。
 // Platform power control; falls back to halting when firmware has no support.

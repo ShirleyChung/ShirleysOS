@@ -66,6 +66,24 @@ bool spurious_interrupt(Irq) { return false; }
 std::uint64_t timer_ticks() { return 0; }
 unsigned timer_frequency() { return 0; }
 
+// 中斷送達時要讀 AIC，主控台要寫除錯 UART，兩者在 user 位址空間裡都必須
+// 存在。UART 的位址是問出來的而不是寫死的：韌體資料解析完之後它可能已經被
+// 換成另一個位址。
+//
+// An arriving interrupt reads the AIC and the console writes the debug UART,
+// so both have to exist inside the user address space. The UART address is
+// asked for rather than hard-coded here: it may have been switched to another
+// one once the firmware data was parsed.
+std::size_t mmio_region_count() { return 2; }
+
+MmioRegion mmio_region(std::size_t index) {
+    switch (index) {
+        case 0: return {apple::console_uart_base(), 0x4000};
+        case 1: return {t8103_aic_base, 0x8000};
+        default: return {};
+    }
+}
+
 // Apple Silicon 沒有 PSCI；關機與重開機需要 SMC 與 PMU 驅動程式，排在 M8。
 // Apple Silicon has no PSCI. Power off and restart need SMC and PMU drivers,
 // which arrive in M8.

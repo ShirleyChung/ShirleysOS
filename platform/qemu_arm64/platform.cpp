@@ -5,6 +5,7 @@
 #include "shirley/console.hpp"
 #include "shirley/platform/arm/generic_timer.hpp"
 #include "shirley/platform/arm/gicv2.hpp"
+#include "shirley/platform/arm/pl011.hpp"
 
 namespace shirley::platform {
 Capabilities platform_capabilities{};
@@ -22,6 +23,10 @@ namespace {
 // and works from known constants.
 constexpr std::uintptr_t virt_gic_distributor = 0x08000000;
 constexpr std::uintptr_t virt_gic_cpu_interface = 0x08010000;
+// 主控台輸出用的 PL011 也是主控台的輸入裝置，位址與 console.cpp 相同。
+// The PL011 the console writes through is also the console's input device, at
+// the same address console.cpp uses.
+constexpr std::uintptr_t virt_uart = 0x09000000;
 
 // QEMU virt 的 PSCI 介面預設使用 HVC 呼叫慣例。
 // The PSCI interface on QEMU virt uses the HVC calling convention by default.
@@ -46,6 +51,13 @@ void initialize(const BootInfo& boot_info) {
     // The timer comes up after the controller, because unmasking PPI 30 is the
     // distributor's job.
     const bool timer = controller && arm::generic_timer_initialize(arm::generic_timer_default_frequency);
+    // UART 的接收中斷同樣要等分配器就緒才解得開遮罩。這台機器沒有鍵盤，
+    // 序列埠就是唯一的輸入裝置，主控台 shell 完全靠它。
+    //
+    // The UART's receive interrupt also needs the distributor before it can be
+    // unmasked. This machine has no keyboard, so the serial port is the only
+    // input device and the console shell depends entirely on it.
+    if (controller) arm::pl011_input_initialize(virt_uart, arm::pl011_virt_irq);
     platform_capabilities.serial_console = true;
     platform_capabilities.interrupt_controller = controller;
     platform_capabilities.timer = timer;
@@ -77,6 +89,30 @@ bool spurious_interrupt(Irq) { return false; }
 
 std::uint64_t timer_ticks() { return arm::generic_timer_ticks(); }
 unsigned timer_frequency() { return arm::generic_timer_frequency(); }
+
+namespace {
+
+// 進入 user 空間之後，核心仍然要讀 GIC 的 CPU 介面來確認中斷、要寫 PL011
+// 才能輸出，因此這三段 MMIO 必須存在於每一個位址空間裡。分配器則是解除
+// 遮罩與設定路由時會用到。
+//
+// Once userspace is running the kernel still reads the GIC's CPU interface to
+// acknowledge an interrupt and still writes the PL011 to print, so these three
+// MMIO ranges have to exist in every address space. The distributor is the one
+// unmasking and routing go through.
+constexpr MmioRegion regions[] = {
+    {virt_uart, 0x1000},
+    {virt_gic_distributor, 0x10000},
+    {virt_gic_cpu_interface, 0x2000},
+};
+
+} // namespace
+
+std::size_t mmio_region_count() { return sizeof(regions) / sizeof(regions[0]); }
+
+MmioRegion mmio_region(std::size_t index) {
+    return index < mmio_region_count() ? regions[index] : MmioRegion{};
+}
 
 [[noreturn]] void power_off() {
     psci_call(psci_system_off);

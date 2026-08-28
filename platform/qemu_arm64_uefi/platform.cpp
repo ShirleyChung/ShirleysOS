@@ -5,6 +5,7 @@
 #include "shirley/console.hpp"
 #include "shirley/platform/arm/generic_timer.hpp"
 #include "shirley/platform/arm/gicv2.hpp"
+#include "shirley/platform/arm/pl011.hpp"
 
 namespace shirley::platform {
 Capabilities platform_capabilities{};
@@ -15,6 +16,10 @@ namespace {
 // the same addresses as on the non-UEFI path.
 constexpr std::uintptr_t virt_gic_distributor = 0x08000000;
 constexpr std::uintptr_t virt_gic_cpu_interface = 0x08010000;
+// PL011 的位址同樣與 BIOS 路徑相同，UEFI 韌體離開後它仍然在那裡。
+// The PL011 sits at the same address as on the non-UEFI path and is still
+// there once the firmware has left.
+constexpr std::uintptr_t virt_uart = 0x09000000;
 
 // QEMU virt 的 PSCI 介面預設使用 HVC 呼叫慣例，UEFI 開機路徑同樣適用。
 // The PSCI interface on QEMU virt uses the HVC calling convention by default,
@@ -37,6 +42,13 @@ void initialize(const BootInfo& boot_info) {
     console::write(controller ? "[IRQ] GICv2 initialized\n"
                               : "[IRQ] no GICv2 found; device interrupts stay masked\n");
     const bool timer = controller && arm::generic_timer_initialize(arm::generic_timer_default_frequency);
+    // 韌體也在使用同一個 UART，因此接收中斷由驅動程式重新設定，而不是沿用
+    // ExitBootServices 之後殘留的狀態。
+    //
+    // The firmware was using this very UART, so the driver reprograms the
+    // receive interrupt rather than inheriting whatever survived
+    // ExitBootServices.
+    if (controller) arm::pl011_input_initialize(virt_uart, arm::pl011_virt_irq);
     platform_capabilities.serial_console = true;
     platform_capabilities.interrupt_controller = controller;
     platform_capabilities.timer = timer;
@@ -66,6 +78,28 @@ bool spurious_interrupt(Irq) { return false; }
 
 std::uint64_t timer_ticks() { return arm::generic_timer_ticks(); }
 unsigned timer_frequency() { return arm::generic_timer_frequency(); }
+
+namespace {
+
+// 與 BIOS 路徑相同的三段裝置記憶體：中斷送達時要讀 CPU 介面，主控台要寫
+// PL011，兩者在 user 位址空間裡都必須存在。
+//
+// The same three device ranges as on the non-UEFI path: an arriving interrupt
+// reads the CPU interface and the console writes the PL011, and both have to
+// exist inside the user address space.
+constexpr MmioRegion regions[] = {
+    {virt_uart, 0x1000},
+    {virt_gic_distributor, 0x10000},
+    {virt_gic_cpu_interface, 0x2000},
+};
+
+} // namespace
+
+std::size_t mmio_region_count() { return sizeof(regions) / sizeof(regions[0]); }
+
+MmioRegion mmio_region(std::size_t index) {
+    return index < mmio_region_count() ? regions[index] : MmioRegion{};
+}
 
 // 核心已經呼叫過 ExitBootServices，因此改用 PSCI 而不是 UEFI runtime services。
 // The kernel has already gone through ExitBootServices, so PSCI is used rather

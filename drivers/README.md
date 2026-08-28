@@ -5,7 +5,9 @@ their platform directory unless they are reusable device drivers.
 
 `BlockDevice` is the sector-oriented disk contract. `RamDisk` supplies a
 hardware-independent implementation for early kernel use and host tests; ATA,
-NVMe, and virtio implementations remain platform drivers.
+NVMe, and virtio implementations remain platform drivers. The root file system
+runs on a `RamDisk` today, which is what lets `kernel/fs/` be written against
+the block interface before any real disk driver exists.
 
 `input/` holds input logic that touches no hardware — today the PS/2 scancode
 translation the PC keyboard driver uses. Splitting a driver along that line

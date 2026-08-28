@@ -8,6 +8,7 @@ a machine directory, so nothing here reads a machine's identity.
 | ---- | ------ |
 | `gicv2.cpp` | Generic Interrupt Controller version 2: distributor and CPU interface |
 | `generic_timer.cpp` | ARM architected timer on PPI 30, at 100 Hz |
+| `pl011_input.cpp` | PL011 UART receive path, the console's only input device on these machines |
 
 ## GICv2
 
@@ -33,6 +34,16 @@ private to a core, so their target field is read-only.
 end-of-interrupt also carries its source core, which will matter when
 inter-processor interrupts arrive with SMP; there are no SGIs while there is
 one core.
+
+## PL011 input
+
+The platform's console backend writes through the PL011; this is the other
+half, turning received characters into console input. Both the receive and the
+receive-timeout interrupts are unmasked, and the FIFO level is set to one
+eighth: a terminal sends a single character at a time, well below any higher
+trigger level, and without the timeout interrupt those keystrokes would sit in
+the FIFO forever. The handler drains until the FIFO is empty, because a
+leftover byte keeps the interrupt pending.
 
 ## Architected timer
 

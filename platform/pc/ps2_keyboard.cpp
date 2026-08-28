@@ -50,7 +50,6 @@ constexpr std::uint8_t configuration_first_port_clock_disabled = 1u << 4;
 constexpr unsigned wait_attempts = 100000;
 
 input::ScancodeDecoder decoder;
-io::InputQueue queue;
 std::uint64_t characters = 0;
 
 bool wait_writable() {
@@ -116,21 +115,6 @@ void enable_scanning() {
     outb(data_port, keyboard_enable_scanning);
 }
 
-// 把字元回顯到主控台。Backspace 要真的把畫面上的字元擦掉，因此送出
-// 「退一格、寫空白、再退一格」。
-//
-// Echo a character to the console. A backspace has to actually erase the
-// character on screen, so it is sent as back up, overwrite with a space, back
-// up again.
-void echo(char value) {
-    if (value == '\b') {
-        console::write("\b \b");
-        return;
-    }
-    const char text[2] = {value, '\0'};
-    console::write(text, 1);
-}
-
 #ifdef SHIRLEY_DEBUG_SCANCODES
 // 建置時定義 SHIRLEY_DEBUG_SCANCODES 就會印出每一個原始掃描碼。
 // Defining SHIRLEY_DEBUG_SCANCODES at build time prints every raw scancode.
@@ -170,8 +154,13 @@ void keyboard_interrupt(unsigned, void*) {
         const char decoded = decoder.feed(code);
         if (decoded == '\0') continue;
         ++characters;
-        queue.push(decoded);
-        echo(decoded);
+        // 回顯交給行編輯器：驅動程式只負責把字元交出去，畫面上要出現什麼
+        // 是使用這些字元的人才知道的事。
+        //
+        // Echo belongs to the line editor. The driver's job ends at handing
+        // the character over; what should appear on screen is known only to
+        // whoever is consuming it.
+        io::console_input_push(decoded);
     }
 }
 
@@ -179,7 +168,6 @@ void keyboard_interrupt(unsigned, void*) {
 
 bool ps2_keyboard_initialize() {
     decoder.reset();
-    queue.clear();
     characters = 0;
 
     if (!enable_first_port_interrupt()) {
@@ -202,12 +190,12 @@ bool ps2_keyboard_initialize() {
     // 有了輸入裝置之後標準輸入才有東西可接。
     // Standard input has something to point at only once an input device
     // exists.
-    io::set_standard_input(&queue);
+    io::attach_console_input();
     console::write("[IRQ] keyboard IRQ enabled\n");
     return true;
 }
 
-std::uint64_t ps2_keyboard_pending() { return queue.available(); }
+std::uint64_t ps2_keyboard_pending() { return io::console_input().available(); }
 std::uint64_t ps2_keyboard_characters() { return characters; }
 
 } // namespace shirley::platform::pc

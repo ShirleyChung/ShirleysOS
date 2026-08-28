@@ -82,4 +82,6 @@ void console_set_uart_base(std::uintptr_t base) {
     if (base != 0) uart_base = base;
 }
 
+std::uintptr_t console_uart_base() { return uart_base; }
+
 } // namespace shirley::platform::apple

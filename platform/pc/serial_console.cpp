@@ -1,6 +1,7 @@
 #include "shirley/console.hpp"
 
 #include "shirley/arch/x86_64/port_io.hpp"
+#include "shirley/platform/pc/serial.hpp"
 
 // 每台 IBM PC 相容機器都有 COM1，不論韌體是 BIOS 還是 UEFI，
 // 因此這個主控台由所有 PC 平台共用。
@@ -12,21 +13,23 @@ namespace {
 using arch::x86_64::inb;
 using arch::x86_64::outb;
 
-// 傳統 PC 的 COM1 序列埠暫存器。
-// The COM1 serial port registers on a legacy PC.
-constexpr std::uint16_t com1 = 0x3f8;
-constexpr std::uint16_t interrupt_enable = com1 + 1;
-constexpr std::uint16_t fifo_control = com1 + 2;
-constexpr std::uint16_t line_control = com1 + 3;
-constexpr std::uint16_t modem_control = com1 + 4;
-constexpr std::uint16_t line_status = com1 + 5;
+// 暫存器位址與狀態位元由 shirley/platform/pc/serial.hpp 提供，輸入端的驅動
+// 程式也用同一份定義。
+// The register addresses and status bits come from
+// shirley/platform/pc/serial.hpp, which the input side uses as well.
+constexpr std::uint16_t com1 = com1_data;
+constexpr std::uint16_t interrupt_enable = com1_interrupt_enable;
+constexpr std::uint16_t fifo_control = com1_fifo_control;
+constexpr std::uint16_t line_control = com1_line_control;
+constexpr std::uint16_t modem_control = com1_modem_control;
+constexpr std::uint16_t line_status = com1_line_status;
 // 除數閂鎖存取位元，用來設定鮑率。
 // The divisor latch access bit, used to set the baud rate.
 constexpr std::uint8_t divisor_latch = 0x80;
 // 8 個資料位元、無同位、1 個停止位元。
 // Eight data bits, no parity, one stop bit.
 constexpr std::uint8_t eight_bits_no_parity = 0x03;
-constexpr std::uint8_t transmitter_empty = 1u << 5;
+constexpr std::uint8_t transmitter_empty = com1_transmitter_empty;
 
 // 等待傳送保持暫存器清空後再送出下一個位元組。
 // Wait for the transmit holding register to drain before sending another byte.

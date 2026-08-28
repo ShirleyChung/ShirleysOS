@@ -8,11 +8,11 @@ echo "ShirleyOS Integration Tests"
 command -v qemu-system-aarch64 >/dev/null 2>&1 || { echo "Missing qemu-system-aarch64. Install with: brew install qemu" >&2; exit 1; }
 command -v qemu-system-x86_64 >/dev/null 2>&1 || { echo "Missing qemu-system-x86_64. Install with: brew install qemu" >&2; exit 1; }
 
-# 主機測試涵蓋與架構無關的核心元件、韌體資料格式解析、開機載入器邏輯，
-# 以及不碰硬體的輸入解碼層。
+# 主機測試涵蓋與架構無關的核心元件、韌體資料格式解析、開機載入器邏輯、
+# 不碰硬體的輸入解碼層，以及根檔案系統映像本身。
 # The host tests cover the architecture-neutral kernel components, the firmware
-# data format parsers, the boot loader logic, and the hardware-independent
-# input decoding layer.
+# data format parsers, the boot loader logic, the hardware-independent input
+# decoding layer, and the root file system image itself.
 printf "[host]        test  ... "
 host_build="$root/build/host"
 cmake -S "$root" -B "$host_build" >/dev/null 2>&1
@@ -20,9 +20,9 @@ cmake --build "$host_build" >/dev/null 2>&1
 ctest --test-dir "$host_build" --output-on-failure >/dev/null
 echo PASS
 
-# 逐一建置可模擬的目標，啟動後確認核心問候訊息出現。
-# Build each emulatable target in turn and confirm the kernel's greeting
-# actually appears after boot.
+# 逐一建置可模擬的目標，開機後在真正的 shell 提示符裡輸入指令。
+# Build each emulatable target in turn, then type commands at the shell prompt
+# the machine actually boots into.
 for target in arm64 x86_64 arm64_uefi x86_64_uefi; do
   printf "[%-11s] build ... " "$target"
   artifact=$(sh "$root/scripts/build.sh" "$target" | tail -n 1)
@@ -46,7 +46,7 @@ for target in arm64 x86_64 arm64_uefi x86_64_uefi; do
   qemu=qemu-system-x86_64
   case "$target" in arm64*) qemu=qemu-system-aarch64 ;; esac
   python3 - "$qemu" "$artifact" "$target" "$firmware" <<'PY'
-import os, socket, subprocess, sys, tempfile, threading, time
+import os, re, socket, subprocess, sys, tempfile, threading, time
 
 qemu, artifact, target, firmware = sys.argv[1:]
 x86 = not target.startswith('arm64')
@@ -76,17 +76,25 @@ else:
 # UEFI firmware needs several seconds before it hands over control, so it gets
 # a longer timeout.
 timeout = 30 if target.endswith('_uefi') else 8
-typed = 'shirley'
+prompt = 'shirley:/$'
 collected = []
 
-process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, text=True)
 
-# QEMU 的輸出必須一邊執行一邊讀，否則按鍵注入之前管線就會塞住。
+# QEMU 的輸出必須一邊執行一邊讀，否則輸入還沒送出去管線就已經塞住。逐字元
+# 讀而不是逐行讀：提示符後面沒有換行，等整行才收下的話永遠等不到它。
+#
 # QEMU's output has to be drained while it runs, or the pipe fills up before
-# any key is injected.
+# any input is sent. It is read one character at a time rather than by lines:
+# the prompt has no trailing newline, and waiting for a whole line would mean
+# never seeing it.
 def drain():
-    for line in process.stdout:
-        collected.append(line)
+    while True:
+        character = process.stdout.read(1)
+        if not character:
+            return
+        collected.append(character)
 reader = threading.Thread(target=drain, daemon=True)
 reader.start()
 
@@ -110,28 +118,45 @@ def fail(message):
     print(output(), file=sys.stderr)
     raise SystemExit(1)
 
-booted = wait_for("Hello! Shirley's OS.", timeout)
+# 一次送一個字元，模擬真正的打字：終端機本來就是一個按鍵一個中斷。
+# Send one character at a time, the way real typing arrives: a terminal
+# produces one interrupt per key.
+def type_line(text, settle=1.0):
+    baseline = len(output())
+    for character in text + '\n':
+        process.stdin.write(character)
+        process.stdin.flush()
+        time.sleep(0.03)
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if output()[baseline:].count(prompt) >= 1:
+            break
+        time.sleep(0.1)
+    time.sleep(settle)
+    return output()[baseline:]
 
-# 開機訊息出現後，計時器已經在跑；等它自己回報滿一秒，證明計時器中斷會反覆
-# 送達，也就證明 end-of-interrupt 有效。兩種架構都適用：x86 是 8259A 上的
-# IRQ0，ARM64 是 GICv2 上的 PPI 30。
+def expect(answer, needle, what):
+    if needle not in answer:
+        fail('%s: expected %r in the shell output' % (what, needle))
+
+# 開機的終點就是 shell 提示符；提示符出現代表核心跑完了整個啟動流程，
+# 並且掛上了根檔案系統。
 #
-# Once the boot messages appear the timer is already running; waiting for it to
-# report a full second proves the timer interrupt keeps arriving, and therefore
-# that end-of-interrupt works. This holds on both architectures: IRQ0 behind an
-# 8259A on x86, PPI 30 behind a GICv2 on ARM64.
-if booted and not wait_for('[IRQ] timer ticking:', 5):
-    fail('The timer interrupt never reported a full second of ticks')
+# Boot ends at the shell prompt. Its appearance means the kernel completed the
+# whole start-up path and mounted the root file system.
+if not wait_for(prompt, timeout):
+    fail('The shell prompt never appeared')
 
+# x86 目標先用注入的實體按鍵敲一行指令：每個字元都必須回顯，而且指令要真的
+# 執行，這證明 IRQ1 的 end-of-interrupt 沒有漏掉。ARM64 沒有 PS/2 鍵盤，
+# 它的輸入全部走序列埠，由後面共用的那幾行指令涵蓋。
+#
+# On the x86 targets a line is typed with injected physical keys first: every
+# character has to echo and the command has to actually run, which proves no
+# end-of-interrupt was missed on IRQ1. ARM64 has no PS/2 keyboard and takes all
+# of its input over the serial port, which the shared commands below cover.
 keyboard = 'not attempted'
-if booted and x86:
-    # 逐一注入按鍵。每個字元都必須回顯，重複輸入仍然有效就代表 IRQ1 的
-    # end-of-interrupt 沒有漏掉。ARM64 目前沒有輸入裝置驅動程式，因此只有
-    # x86 做這一段。
-    #
-    # Inject the keys one at a time. Every character has to be echoed back, and
-    # input that keeps working proves no end-of-interrupt was missed on IRQ1.
-    # ARM64 has no input device driver yet, so only x86 does this part.
+if x86:
     monitor = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     connected = False
     for _ in range(50):
@@ -145,24 +170,70 @@ if booted and x86:
         keyboard = 'SKIP (QEMU monitor socket unavailable)'
     else:
         baseline = len(output())
-        for character in typed:
-            monitor.sendall(('sendkey %s\n' % character).encode())
+        names = {' ': 'spc', '/': 'slash', '.': 'dot', '\n': 'ret'}
+        for character in 'pwd\n':
+            monitor.sendall(('sendkey %s\n' % names.get(character, character)).encode())
             time.sleep(0.15)
         monitor.close()
         deadline = time.time() + 5
-        while time.time() < deadline and typed not in output()[baseline:]:
+        while time.time() < deadline and 'pwd' not in output()[baseline:]:
             time.sleep(0.1)
-        if typed not in output()[baseline:]:
-            fail('Keys sent to the PS/2 controller were not echoed by the IRQ1 handler')
+        answer = output()[baseline:]
+        if 'pwd' not in answer:
+            fail('Keys sent to the PS/2 controller were not echoed by the shell')
+        if '\n/' not in answer:
+            fail('The command typed on the PS/2 keyboard did not run')
         keyboard = 'PASS'
+
+# 檔案系統：列出根目錄要看到 rootfs/ 裡真正存在的項目，讀檔要讀出檔案內容。
+# The file system: listing the root has to show what rootfs/ really contains,
+# and reading a file has to produce that file's contents.
+answer = type_line('ls /')
+expect(answer, 'README.md', 'ls /')
+expect(answer, 'etc/', 'ls /')
+expect(answer, 'docs/', 'ls /')
+
+answer = type_line('cd /etc')
+answer = type_line('ls')
+expect(answer, 'motd', 'ls after cd')
+expect(answer, 'version', 'ls after cd')
+
+# 相對路徑要相對於工作目錄解析，提示符也要跟著工作目錄改變。
+# A relative path resolves against the working directory, and the prompt
+# follows the working directory.
+answer = type_line('cat version')
+expect(answer, 'ShirleyOS', 'cat version')
+if 'shirley:/etc$' not in output():
+    fail('The prompt did not follow the working directory')
+
+answer = type_line('cd ..')
+answer = type_line('pwd')
+expect(answer, '\n/', 'pwd after cd ..')
+
+# 計時器中斷必須持續送達，否則 end-of-interrupt 其實沒有生效。uptime 印出
+# 的是自開機以來的計時器中斷次數，因此非零就代表 IRQ 一直在送。
+#
+# Timer interrupts have to keep arriving, or end-of-interrupt is not really
+# working. uptime prints the timer interrupts counted since boot, so a non-zero
+# count means they keep coming.
+answer = type_line('uptime')
+match = re.search(r'up (\d+) s \((\d+) timer interrupts at (\d+) Hz\)', answer)
+if match is None:
+    fail('uptime did not report the timer')
+if int(match.group(2)) == 0:
+    fail('The timer interrupt never arrived')
+
+# user 程式最後才跑：它會接管 CPU，之後 shell 不會再回來。
+# The user program runs last: it takes over the CPU and the shell does not come
+# back afterwards.
+type_line('hello', settle=2.0)
+if not wait_for("Hello! Shirley's OS.", 5):
+    fail('The embedded user program did not run from the shell')
 
 process.kill()
 reader.join(timeout=2)
 out = output()
 
-if "Hello! Shirley's OS." not in out:
-    print(out, file=sys.stderr)
-    raise SystemExit(1)
 if target.endswith('_uefi'):
     stages = [
         '[uefi] entered EFI application',
@@ -183,17 +254,24 @@ if target.endswith('_uefi'):
 # 中斷子系統的每一段都必須自己回報上線。
 # Every stage of the interrupt subsystem has to report itself online.
 stages = ['[IRQ] IDT initialized', '[IRQ] PIC remapped 0x20/0x28',
-          '[IRQ] PIT timer enabled on IRQ0', '[IRQ] keyboard IRQ enabled'] if x86 else \
+          '[IRQ] PIT timer enabled on IRQ0', '[IRQ] keyboard IRQ enabled',
+          '[IRQ] serial console input enabled on IRQ4'] if x86 else \
          ['[IRQ] EL1 exception vector table initialized', '[IRQ] GICv2 initialized',
-          '[IRQ] architected timer enabled on PPI 30']
+          '[IRQ] architected timer enabled on PPI 30', '[IRQ] UART console input enabled']
 for stage in stages:
     if stage not in out:
         print('Missing interrupt stage: ' + stage, file=sys.stderr)
         print(out, file=sys.stderr)
         raise SystemExit(1)
+# 根檔案系統必須真的掛上，否則 shell 只是個空殼。
+# The root file system has to actually mount, or the shell is an empty shell.
+if 'Root file system: mount failed' in out or 'Root file system:' not in out:
+    print('The root file system did not mount', file=sys.stderr)
+    print(out, file=sys.stderr)
+    raise SystemExit(1)
 # 未處理的 CPU 例外會印出診斷訊息，這代表開機路徑其實已經失敗。
 # An unhandled CPU exception prints a diagnostic, which means the boot path
-# actually failed even though the greeting was reached.
+# actually failed even though the prompt was reached.
 if "CPU exception" in out:
     print(out, file=sys.stderr)
     raise SystemExit(1)

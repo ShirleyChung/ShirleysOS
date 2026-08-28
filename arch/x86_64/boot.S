@@ -16,6 +16,18 @@
 #   0xb000  PD (512 x 2 MiB pages, covering the first 1 GiB)
 #   0x10000 kernel image
 
+# 每次讀 64 個磁區（32 KiB），共讀 kernel_reads 次，也就是 128 KiB 的核心
+# 映像。CMake 的 --pad-to 與映像大小檢查必須與這兩個常數一致，否則核心會被
+# 靜默截斷。每一段都落在 32 KiB 對齊的位址上，因此不可能跨越 64 KiB 邊界。
+#
+# Each read moves 64 sectors (32 KiB), and there are kernel_reads of them, so
+# 128 KiB of kernel image in total. CMake's --pad-to and image size check must
+# agree with these two constants or the kernel is silently truncated. Every
+# chunk lands on a 32 KiB aligned address, so none can cross a 64 KiB boundary.
+.equ sectors_per_read, 64
+.equ kernel_reads, 4
+.equ paragraphs_per_read, sectors_per_read * 512 / 16
+
 .section .text
 .code16
 .global _start
@@ -65,14 +77,30 @@ e820_skip:
     jb e820_next
 e820_done:
     mov [0x8000], bp
+    mov cx, kernel_reads
 
-    # 透過 BIOS 擴充磁碟服務讀取核心。
-    # Read the kernel with the BIOS extended disk service.
+    # 透過 BIOS 擴充磁碟服務讀取核心。單次 BIOS 讀取能搬的磁區數有限，
+    # 而且緩衝區不可以跨越 64 KiB 邊界，因此核心分成數次固定大小的讀取
+    # 載入；每讀完一段就把目的地段位址與 LBA 一起往前推。
+    #
+    # Read the kernel with the BIOS extended disk service. A single BIOS read
+    # can only move so many sectors and its buffer must not cross a 64 KiB
+    # boundary, so the kernel arrives in several fixed-size reads, advancing
+    # both the destination segment and the LBA after each one.
+read_kernel:
+    # int 13h 可能改動 cx 與 dl，因此每一圈都重新設定，圈數自行保存。
+    # int 13h may clobber cx and dl, so both are set again on every pass and
+    # the loop counter is preserved by hand.
+    push cx
     mov dl, [boot_drive]
     mov ah, 0x42
     mov si, offset dap
     int 0x13
     jc disk_error
+    add word ptr [dap_segment], paragraphs_per_read
+    add dword ptr [dap_lba], sectors_per_read
+    pop cx
+    loop read_kernel
 
     # 開啟 A20 line。
     # Open the A20 line.
@@ -123,13 +151,14 @@ disk_error: hlt
     jmp disk_error
 
 .align 8
-# DAP：從 LBA 1 讀取 127 個磁區至 0x1000:0。
-# Disk address packet: read 127 sectors starting at LBA 1 into 0x1000:0.
+# DAP：從 LBA 1 開始，每次把 sectors_per_read 個磁區讀到 0x1000:0 之後。
+# Disk address packet: read sectors_per_read sectors at a time, starting at
+# LBA 1 and landing at 0x1000:0 onwards.
 dap: .byte 0x10, 0
-    .word 127
+    .word sectors_per_read
     .word 0
-    .word 0x1000
-    .quad 1
+dap_segment: .word 0x1000
+dap_lba: .quad 1
 boot_drive: .byte 0
 
 .code64

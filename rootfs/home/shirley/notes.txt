@@ -1,0 +1,11 @@
+Notes
+-----
+
+The shell reached a usable state once four pieces existed at the same time:
+an interrupt-driven input device, a shared input queue, a file system to look
+at, and a line editor to tie them together.
+
+Next, in the order they are worth doing:
+  - write support, so a file can be changed rather than only read
+  - a process per command, so a program can exit back to the prompt
+  - a disk driver, so the file system stops living inside the kernel image

@@ -114,8 +114,24 @@ extern "C" void arm64_exception_dispatch(shirley::arch::arm64::ExceptionFrame* f
         frame->x[0] = static_cast<std::uint64_t>(context.result);
         return;
     }
-    if (vector < vector_table_size && handlers[vector] != nullptr) {
-        handlers[vector](static_cast<unsigned>(vector), contexts[vector]);
+    // 中斷不會因為它打斷的是 EL0 還是 EL1 而變成另一個中斷：同一條 IRQ 線、
+    // 同一個裝置、同一個處理常式。硬體卻用不同的向量入口回報這兩種情形，
+    // 因此把來自較低例外層級的 IRQ 與 FIQ 對應回目前例外層級的入口，驅動
+    // 程式只需要註冊一次。同步例外與 SError 不這樣處理：user 行程的錯誤
+    // 和核心自己的錯誤是兩回事，不該共用處理常式。
+    //
+    // An interrupt does not become a different interrupt because of which
+    // exception level it interrupted: same line, same device, same handler.
+    // The hardware nonetheless reports the two cases through different vector
+    // entries, so a lower-EL IRQ or FIQ is mapped back onto the current-EL
+    // entry and a driver registers only once. Synchronous exceptions and
+    // SErrors are deliberately left alone: a fault in a user process and a
+    // fault in the kernel are not the same event and must not share a handler.
+    auto slot = vector;
+    if (slot == lower_el_aarch64_irq) slot = current_el_spx_irq;
+    if (slot == lower_el_aarch64_fiq) slot = current_el_spx_fiq;
+    if (slot < vector_table_size && handlers[slot] != nullptr) {
+        handlers[slot](static_cast<unsigned>(slot), contexts[slot]);
         return;
     }
     report(*frame);

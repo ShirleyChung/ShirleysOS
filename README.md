@@ -18,6 +18,7 @@ The first targets are QEMU x86_64 and QEMU ARM64. Apple Silicon is treated as an
 * `boot/uefi/` 是 ShirleyOS 的 UEFI 啟動載入器：它是一個 PE32+ EFI 應用程式，可在 x86_64 上由 OVMF 執行，在 ARM64 上由 EDK2/AAVMF 執行，會載入 kernel ELF，退出 boot services，並交接已驗證的 `BootHandoff`；`boot/uefi/` is the ShirleyOS UEFI boot loader: a PE32+ EFI application that runs under OVMF on x86_64 and EDK2/AAVMF on ARM64, loads the kernel ELF, exits boot services, and hands over a validated `BootHandoff`.
 * `boot/common/` 是所有載入器共用的程式碼；`boot/common/` is the shared code used by all boot loaders.
 * `libc/` 是共用函式庫，但 syscall trampoline 位於 `libc/arch/`；`libc/` is the shared library layer, with syscall trampolines in `libc/arch/`.
+* `rootfs/` 是根檔案系統的內容，建置時會被打包成唯讀映像連進核心；`rootfs/` is the content of the root file system, packed into a read-only image and linked into the kernel at build time.
 
 ## Current status
 
@@ -25,9 +26,9 @@ The first targets are QEMU x86_64 and QEMU ARM64. Apple Silicon is treated as an
 
 Milestone M0.5 brings up both architectures for real: x86_64 installs its own GDT, TSS, and IDT with CPU exception reporting, and drives real device interrupts through it; ARM64 installs the EL1 exception vector table. Both architectures provide a page-table implementation of the generic address-space interface and a user-mode entry path. Every platform converts its firmware memory map — BIOS E820, a flattened device tree, Apple `boot_args`, or a UEFI memory map — into the neutral `BootInfo` that drives the page allocator.
 
-x86_64 也擁有完整可用的中斷子系統：256 個入口的 IDT、作為啟動中斷控制器後端的 8259A、供裝置驅動程式使用的通用 `shirley::irq` 層、IRQ0 上的 100 Hz PIT，以及 IRQ1 上的中斷驅動 PS/2 鍵盤；鍵盤輸入會被回顯到 console 並排入標準輸入。核心在空閒時使用 `hlt`，不進行輪詢。
+x86_64 也擁有完整可用的中斷子系統：256 個入口的 IDT、作為啟動中斷控制器後端的 8259A、供裝置驅動程式使用的通用 `shirley::irq` 層、IRQ0 上的 100 Hz PIT，以及 IRQ1 上的中斷驅動 PS/2 鍵盤與 IRQ4 上的序列埠接收路徑；兩者解出的字元都排入同一個共用佇列成為標準輸入，回顯則交給 shell 的行編輯器。核心在空閒時使用 `hlt`，不進行輪詢。
 
-x86_64 also has a working interrupt subsystem end to end: a 256-entry IDT, the 8259A as its bring-up interrupt controller backend, a generic `shirley::irq` layer that device drivers use instead of touching a controller, a 100 Hz PIT on IRQ0, and an interrupt-driven PS/2 keyboard on IRQ1 whose characters are echoed to the console and queued as standard input. The kernel idles in `hlt` and polls nothing.
+x86_64 also has a working interrupt subsystem end to end: a 256-entry IDT, the 8259A as its bring-up interrupt controller backend, a generic `shirley::irq` layer that device drivers use instead of touching a controller, a 100 Hz PIT on IRQ0, an interrupt-driven PS/2 keyboard on IRQ1, and the serial receive path on IRQ4. Both queue their decoded characters into the one shared queue standard input reads, and echo is left to the shell's line editor. The kernel idles in `hlt` and polls nothing.
 
 ARM64 也在同一個 `shirley::irq` 介面下實作相同的中斷子系統。它的控制器採用多工分派，而不是為每個 IRQ 分配獨立向量：每個裝置中斷都會進入同一個 IRQ 例外入口，控制器驅動程式再辨識來源並進行派送。`platform/arm/` 儲存的是 ARM 定義的內容，而不是任何單一機器的實作；其中包含 GICv2 驅動與 PPI 30 上的架構定時器，與 `platform/pc/` 相對應。`qemu_arm64` 和 `qemu_arm64_uefi` 也都會透過它運作 100 Hz 計時器。
 
@@ -36,6 +37,14 @@ ARM64 now has the same subsystem behind the same `shirley::irq` interface. Its c
 Apple Silicon 改為使用 `platform/apple_silicon/` 中自己的 AIC，現在已成為完整路徑，而不只是暫存器存取層面。它仍未真正運行：QEMU 沒有 Apple Silicon 機器模型，因此該目標僅完成建置與檢視，尚未啟動；其暫存器配置來自 Asahi Linux 公開文件，而非原廠資料表。
 
 Apple Silicon uses its own AIC in `platform/apple_silicon/` instead, which is now a complete path rather than just register access. It has still never been executed: QEMU has no Apple Silicon machine model, so that target is built and reviewed but not booted, and its register layout comes from Asahi Linux's published documentation rather than a datasheet.
+
+開機的終點現在是一個可用的主控台。核心會掛上根檔案系統，然後進入 shell：輸入的每個字元都由中斷送達，`ls`、`cat`、`cd` 讀的是真正掛載起來的檔案系統，沒有輸入時 CPU 停在等待中斷的低功耗狀態，不做任何輪詢。x86_64 有兩個輸入裝置（IRQ1 的 PS/2 鍵盤與 IRQ4 的序列埠），ARM64 則靠 PL011 的接收中斷；兩者的字元都進入同一個共用佇列，shell 不需要知道字元來自哪裡。
+
+Boot now ends at a usable console. The kernel mounts the root file system and enters a shell: every character it reads arrived through an interrupt, `ls`, `cat`, and `cd` walk a file system that is really mounted, and with nothing to read the CPU parks in a low-power wait rather than polling anything. x86_64 has two input devices — the PS/2 keyboard on IRQ1 and the serial port on IRQ4 — while ARM64 uses the PL011's receive interrupt; both feed one shared queue, so the shell never learns where a character came from.
+
+根檔案系統是一份唯讀的 SHRFS1 映像：`rootfs/` 在建置時被打包成位元組陣列連進核心，開機時透過 RAM disk 掛載，因此在還沒有磁碟驅動程式之前就有檔案可讀。檔案系統本身只透過 `io::BlockDevice` 存取資料，換成真正的磁碟時同一份程式碼可以直接沿用。
+
+The root file system is a read-only SHRFS1 image: `rootfs/` is packed into a byte array at build time, linked into the kernel, and mounted through a RAM disk at boot, so there are files to read before any disk driver exists. The file system reaches its data only through `io::BlockDevice`, so the same code carries over unchanged to a real disk.
 
 如需了解架構的真實來源與未來路線圖，請參閱 [OS_SPEC.md](OS_SPEC.md)。See [OS_SPEC.md](OS_SPEC.md) for the architectural source of truth and roadmap.
 
@@ -46,19 +55,39 @@ Apple Silicon uses its own AIC in `platform/apple_silicon/` instead, which is no
 [IRQ] PIC remapped 0x20/0x28
 [IRQ] PIT timer enabled on IRQ0
 [IRQ] keyboard IRQ enabled
+[IRQ] serial console input enabled on IRQ4
 ShirleyOS booting...
 Architecture: x86_64
 Processor: GenuineIntel
 Platform: QEMU x86_64
 Machine: QEMU PC with SeaBIOS firmware
-Memory regions: 7
+Memory regions: 8
 Usable memory: 511 MiB
-Free pages: 130870
+Free pages: 130867
 Interrupts: enabled
 Timer: 100 Hz
-Keyboard: type to echo through the interrupt path
-Hello! Shirley's OS.
-[IRQ] timer ticking: 100 interrupts in the first second
+Root file system: 11 entries, 3311 bytes
+
+Welcome to ShirleyOS.
+
+The prompt below is a real shell: it reads keystrokes that arrived through an
+interrupt, and every path it prints comes from a mounted file system.
+
+Try:
+    ls /            list the root directory
+    ls /docs        list one directory
+    cat /etc/motd   print this file again
+    help            every command the shell knows
+
+shirley:/$ ls
+     706  README.md
+   <dir>  docs/
+   <dir>  etc/
+   <dir>  home/
+4 entries
+shirley:/$ cat /etc/version
+ShirleyOS 0.5 "console"
+shirley:/$
 ```
 
 Booting x86_64 under QEMU prints the following from the guest kernel's own serial port:
@@ -68,24 +97,44 @@ Booting x86_64 under QEMU prints the following from the guest kernel's own seria
 [IRQ] PIC remapped 0x20/0x28
 [IRQ] PIT timer enabled on IRQ0
 [IRQ] keyboard IRQ enabled
+[IRQ] serial console input enabled on IRQ4
 ShirleyOS booting...
 Architecture: x86_64
 Processor: GenuineIntel
 Platform: QEMU x86_64
 Machine: QEMU PC with SeaBIOS firmware
-Memory regions: 7
+Memory regions: 8
 Usable memory: 511 MiB
-Free pages: 130870
+Free pages: 130867
 Interrupts: enabled
 Timer: 100 Hz
-Keyboard: type to echo through the interrupt path
-Hello! Shirley's OS.
-[IRQ] timer ticking: 100 interrupts in the first second
+Root file system: 11 entries, 3311 bytes
+
+Welcome to ShirleyOS.
+
+The prompt below is a real shell: it reads keystrokes that arrived through an
+interrupt, and every path it prints comes from a mounted file system.
+
+Try:
+    ls /            list the root directory
+    ls /docs        list one directory
+    cat /etc/motd   print this file again
+    help            every command the shell knows
+
+shirley:/$ ls
+     706  README.md
+   <dir>  docs/
+   <dir>  etc/
+   <dir>  home/
+4 entries
+shirley:/$ cat /etc/version
+ShirleyOS 0.5 "console"
+shirley:/$
 ```
 
-記憶體數字會隨著 kernel 映像檔變大而變動。在 QEMU 顯示視窗中輸入字元，會透過 IRQ1 路徑回顯；QEMU 會從顯示裝置讀取鍵盤事件，因此 `./shirley x86_64` 預設會開啟一個顯示視窗。若要使用舊的 `-nographic` 行為，可設定 `SHIRLEY_HEADLESS=1`，這會變成純輸出模式，沒有鍵盤輸入。
+記憶體數字會隨著 kernel 映像檔變大而變動。提示符出現之後就可以直接在這個終端機裡打字：按鍵沿著序列埠進來，由 IRQ4 送到 shell。QEMU 的 PS/2 按鍵事件來自顯示裝置，因此要走 IRQ1 那條路徑時，設定 `SHIRLEY_DISPLAY=1` 開一個顯示視窗，在視窗裡打字。
 
-The memory figures move as the kernel image grows. Typing in the QEMU display window echoes characters through the IRQ1 path; QEMU sources keyboard events from its display device, so `./shirley x86_64` opens one by default. Set `SHIRLEY_HEADLESS=1` for the old `-nographic` behaviour, which is output-only and has no keyboard.
+The memory figures move as the kernel image grows. Once the prompt appears, type straight into this terminal: the keys arrive over the serial port and reach the shell on IRQ4. QEMU sources PS/2 key events from its display device, so set `SHIRLEY_DISPLAY=1` to open a display window and type there when it is the IRQ1 path being exercised.
 
 ## Running ShirleyOS on macOS
 

@@ -19,6 +19,14 @@ AArch64 has 16 exception vector entries rather than a 256-entry table, so
 an IRQ entry; the interrupt-controller driver in `platform/` is responsible
 for working out which device raised it.
 
+The hardware reports an interrupt through a different entry depending on the
+exception level it interrupted, but an interrupt does not become a different
+interrupt because a user process was running: same line, same device, same
+handler. `exception.cpp` therefore maps a lower-EL IRQ or FIQ onto the
+current-EL entry, so a driver registers once and keeps working while userspace
+runs. Synchronous exceptions and SErrors are deliberately left alone — a fault
+in a user process and a fault in the kernel are not the same event.
+
 The MMU is not enabled at boot. `mmu_enable()` programs MAIR, TCR, and TTBR0
 and turns on SCTLR_EL1.M, but nothing calls it yet: switching the running
 kernel onto its own translation tables is milestone M1. Until then

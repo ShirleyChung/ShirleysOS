@@ -2,12 +2,14 @@
 #include "shirley/boot_info.hpp"
 #include "shirley/console.hpp"
 #include "shirley/format.hpp"
+#include "shirley/fs.hpp"
 #include "shirley/io.hpp"
 #include "shirley/irq.hpp"
 #include "shirley/memory.hpp"
 #include "shirley/platform.hpp"
+#include "shirley/rootfs.hpp"
 #include "shirley/scheduler.hpp"
-#include "shirley/user_loader.hpp"
+#include "shirley/shell.hpp"
 
 namespace {
 
@@ -84,27 +86,26 @@ extern "C" [[noreturn]] void kernel_main(const shirley::BootInfo* boot_info) {
     shirley::arch::enable_interrupts();
     write_field("Interrupts: ", shirley::arch::interrupts_enabled() ? "enabled" : "disabled");
     if (timer_rate != 0) write_count("Timer: ", timer_rate, " Hz\n");
-    if (shirley::io::standard_input() != nullptr)
-        shirley::console::write("Keyboard: type to echo through the interrupt path\n");
-    shirley::console::write("Launching user hello...\n");
-    if (!shirley::user::launch_embedded())
-        shirley::console::write("[USER] failed to load embedded hello ELF\n");
 
-    // 尚未有可執行的工作，因此閒置等待下一個中斷，而不是輪詢任何裝置。
-    // 計時器中斷本身不輸出任何訊息，但滿一秒時回報一次，證明 IRQ0 會反覆
-    // 送達，也就證明 end-of-interrupt 確實有效。
+    // 根檔案系統是嵌在核心映像裡的唯讀映像，透過 RAM disk 掛載，因此開機
+    // 不需要任何磁碟驅動程式就有檔案可讀。
     //
-    // There is nothing to run yet, so the kernel idles waiting for the next
-    // interrupt rather than polling any device. The timer interrupt itself
-    // prints nothing, but one second's worth is reported once: proof that IRQ0
-    // keeps arriving, and therefore that end-of-interrupt works.
-    bool timer_reported = timer_rate == 0;
-    for (;;) {
-        shirley::arch::wait_for_interrupt();
-        if (!timer_reported && shirley::platform::timer_ticks() >= timer_rate) {
-            write_count("[IRQ] timer ticking: ", shirley::platform::timer_ticks(),
-                        " interrupts in the first second\n");
-            timer_reported = true;
-        }
+    // The root file system is a read-only image embedded in the kernel and
+    // mounted through a RAM disk, so boot needs no disk driver to have files
+    // to read.
+    if (shirley::fs::mount_rootfs()) {
+        write_count("Root file system: ", shirley::fs::entry_count(), " entries, ");
+        write_count("", shirley::fs::total_file_bytes(), " bytes\n");
+    } else {
+        shirley::console::write("Root file system: mount failed\n");
     }
+    shirley::console::write("\n");
+
+    // 開機到此結束，機器接下來就是這個提示符：shell 讀取中斷送進來的按鍵，
+    // 沒有輸入時停在等待中斷的低功耗狀態，不輪詢任何裝置。
+    //
+    // Boot ends here and the machine becomes this prompt. The shell reads the
+    // keystrokes interrupts deliver and, with nothing to read, parks in a
+    // low-power wait rather than polling any device.
+    shirley::shell::run();
 }

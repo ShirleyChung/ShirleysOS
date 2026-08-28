@@ -152,6 +152,25 @@ Each platform also supplies `shirley_platform_boot_info()`, which converts
 whatever the firmware handed the kernel into the neutral `BootInfo` in
 `include/shirley/boot_info.hpp`.
 
+平台還會列出 `MmioRegion`：核心在其他位址空間執行時仍然會碰到的裝置記憶體。
+進入 user 空間會換上 user 的分頁表，但中斷不會因此停止：處理常式要讀中斷
+控制器，主控台也還要能輸出，這些 MMIO 因此必須存在於每一個位址空間裡，
+否則第一個在 user 空間收到的中斷就是一次 data abort。這件事只有平台知道，
+所以由平台列出，通用的 `kernel/user/launch.cpp` 只負責照著映射。裝置掛在
+I/O port 上的平台（PC 的 8259A、PIT、COM1）回報零個區段，因為 port I/O 不
+經過分頁表。
+
+A platform also lists its `MmioRegion`s: the device memory the kernel still
+touches while another address space is active. Entering userspace switches to
+the user's page tables, but interrupts do not stop: a handler reads the
+interrupt controller and the console still prints, so that MMIO has to exist in
+every address space or the first interrupt taken in userspace is a data abort.
+Only the platform knows which addresses those are, so the platform lists them
+and the generic `kernel/user/launch.cpp` merely maps what it is told. A
+platform whose devices are behind I/O ports — the PC's 8259A, PIT, and COM1 —
+reports no regions at all, because port I/O does not go through the page
+tables.
+
 ## 中斷子系統 / Interrupt subsystem
 
 中斷路徑分成三層，每一層都可以獨立替換：架構層擁有向量表，平台層擁有中斷
@@ -314,15 +333,17 @@ behind, and registers its handler through the IRQ layer.
 
 第一版支援掃描碼組 1 的小寫字母、數字、Enter、Backspace、Tab、空白與基本
 標點；放開事件與 Shift、Ctrl、Alt 一律忽略，擴充鍵的兩個位元組整組丟棄。
-解出的字元會回顯到主控台，同時排進 `io::InputQueue`，並由它擔任標準輸入。
-建置時定義 `SHIRLEY_DEBUG_SCANCODES` 會印出每一個原始掃描碼。
+解出的字元會推進 `io::console_input()` 這個共用佇列，驅動程式本身不做回顯：
+畫面上該出現什麼是行編輯器才知道的事。建置時定義 `SHIRLEY_DEBUG_SCANCODES`
+會印出每一個原始掃描碼。
 
 The first version covers scancode set 1's lowercase letters, digits, Enter,
 Backspace, Tab, space, and basic punctuation; release events and Shift, Ctrl,
 and Alt are ignored, and both bytes of an extended key are dropped. A decoded
-character is echoed to the console and queued in an `io::InputQueue`, which
-serves as standard input. Defining `SHIRLEY_DEBUG_SCANCODES` at build time
-prints every raw scancode.
+character is pushed into the shared `io::console_input()` queue, and the driver
+does not echo: what should appear on screen is something only the line editor
+knows. Defining `SHIRLEY_DEBUG_SCANCODES` at build time prints every raw
+scancode.
 
 `io::InputQueue` 只有一個生產者（中斷處理常式）與一個消費者（一般核心
 程式），生產者只寫 head、消費者只寫 tail，因此不需要鎖。佇列滿了會捨棄新的
@@ -332,6 +353,45 @@ prints every raw scancode.
 consumer (ordinary kernel code); the producer only writes head and the
 consumer only writes tail, so no lock is needed. A full queue drops the new
 character, because the producer must not touch the index the consumer owns.
+
+### 主控台輸入 / Console input
+
+一台機器可能有好幾個輸入裝置，它們都應該能驅動同一個主控台。所有輸入驅動
+程式因此把解碼後的字元推進 `io::console_input()` 這一個共用佇列，並在自己
+初始化成功後呼叫 `io::attach_console_input()` 把它接成標準輸入。多個裝置共用
+一個佇列不違反單生產者的前提：中斷處理常式執行時中斷是關閉的，兩個處理常式
+不會同時跑。
+
+A machine can have several input devices and all of them should be able to
+drive the same console. Every input driver therefore pushes its decoded
+characters into the one shared `io::console_input()` queue and calls
+`io::attach_console_input()` once it is up. Several devices sharing one queue
+does not break the single-producer premise: an interrupt handler runs with
+interrupts disabled, so two of them never run at the same time.
+
+目前有三個輸入驅動程式。`platform/pc/ps2_keyboard.cpp` 是 IRQ1 上的 PS/2
+鍵盤；`platform/pc/serial_input.cpp` 是 IRQ4 上的 COM1 接收路徑，讓序列埠
+另一端的終端機也能打字；`platform/arm/pl011_input.cpp` 是 PL011 的接收中斷，
+那是 QEMU virt 上唯一的輸入裝置。序列裝置會把終端機的回車符換成換行、把 DEL
+換成 Backspace，讓進入佇列的字元和鍵盤解出來的完全一樣。
+
+There are three input drivers today. `platform/pc/ps2_keyboard.cpp` is the PS/2
+keyboard on IRQ1; `platform/pc/serial_input.cpp` is COM1's receive path on
+IRQ4, so a terminal on the other end of the serial line can type too; and
+`platform/arm/pl011_input.cpp` is the PL011's receive interrupt, the only input
+device on QEMU virt. The serial drivers translate a terminal's carriage return
+into a newline and DEL into a backspace, so what enters the queue is identical
+to what the keyboard decodes.
+
+兩個序列驅動程式都必須把接收 FIFO 的觸發門檻降到最低。終端機一次只送一個
+字元，門檻設在 14 個位元組（COM1 輸出端的預設值）時，按鍵會留在 FIFO 裡等
+不到中斷；PL011 還要同時開啟接收逾時中斷，理由相同。
+
+Both serial drivers have to lower the receive FIFO's trigger level. A terminal
+sends one character at a time, and at the fourteen-byte level COM1's output
+side leaves behind, keystrokes sit in the FIFO waiting for an interrupt that
+never arrives; the PL011 needs its receive-timeout interrupt unmasked for the
+same reason.
 
 ### ARM64 的 GICv2 與架構計時器 / GICv2 and the architected timer on ARM64
 
@@ -491,6 +551,113 @@ the routines the compiler emits implicitly (`memset`, `memcpy`, `memmove`,
 `memcmp`, `operator delete`, `__cxa_pure_virtual`). There is no heap, so every
 `operator delete` stops the processor instead of pretending to free memory.
 
+核心以 `-fno-threadsafe-statics` 編譯。函式內的 static 物件預設會產生
+`__cxa_guard_*` 呼叫，那是 libstdc++ 的執行期常式，裸機核心沒有可連結的
+版本。核心目前只跑在單一核心上，第一次初始化不可能被另一個執行緒插隊，因此
+關掉那層保護是安全的；等到有第二顆核心時，這個假設必須重新檢視。
+
+The kernel is compiled with `-fno-threadsafe-statics`. A function-local static
+object otherwise emits `__cxa_guard_*` calls, libstdc++ runtime routines a
+freestanding kernel has nothing to link against. The kernel runs on a single
+core today, so no other thread can race the first initialization and dropping
+the guard is safe; that assumption has to be revisited when a second core
+appears.
+
+## 檔案系統 / File system
+
+`shirley::fs` 掛載一份唯讀的 SHRFS1 卷冊。映像分成三段：32 位元組的標頭、
+每項 80 位元組的目錄表，以及所有檔案內容連續排列的資料區。目錄不儲存子項目
+清單，而是每個項目記錄自己所屬目錄的索引，列出目錄就是掃過目錄表挑出父項目
+相符的項目；在這個規模下掃描的成本可以忽略，換來的是清單不可能和項目本身
+不一致。項目 0 一定是根目錄，而且父項目是自己，因此往上走一定會停下來。
+
+`shirley::fs` mounts one read-only SHRFS1 volume. The image is three regions: a
+32-byte header, an 80-byte entry per file or directory, and a data region with
+every file's bytes back to back. A directory stores no list of children;
+instead each entry records the index of the directory holding it, and listing a
+directory is a scan for entries whose parent matches. At this size the scan
+costs nothing and in exchange a listing can never disagree with the entries it
+names. Entry 0 is always the root and is its own parent, so walking upwards
+always terminates.
+
+標頭與項目都逐位元組以小端序解碼，核心的結構排列方式因此不影響能不能讀懂
+映像。`mount()` 驗證標頭之後會把每個項目都解碼一次：損壞的映像在掛載時就
+失敗，而不是變成第一個 `ls` 的怪異行為。
+
+Both the header and the entries are decoded byte by byte as little-endian, so
+the kernel's struct layout cannot change how an image is read. After validating
+the header, `mount()` decodes every entry once: a corrupt image fails at mount
+time instead of turning into strange behaviour on the first `ls`.
+
+根檔案系統的內容放在 `rootfs/`，由 `cmake/make-rootfs.cmake` 在建置時打包成
+映像並輸出為 C++ 位元組陣列，連結進核心，開機時透過 `io::RamDisk` 掛載。
+因此在還沒有磁碟驅動程式之前就有檔案系統可用。檔案系統只透過
+`io::BlockDevice` 存取資料，讀取一律經過一個區塊大小的緩衝區，換成真正的
+磁碟驅動程式時同一份程式碼可以直接沿用。主機建置連結的是同一份產生的映像，
+`tests/file_system_smoke.cpp` 測的因此就是真正會開機的那個映像。
+
+The root file system's content lives in `rootfs/`. At build time
+`cmake/make-rootfs.cmake` packs it into an image, emits it as a C++ byte array
+that is linked into the kernel, and boot mounts it through an `io::RamDisk`, so
+there is a file system before any disk driver exists. The file system reaches
+its data only through `io::BlockDevice` and always reads through one
+block-sized buffer, so the same code carries over unchanged to a real disk
+driver. The host build links the same generated image, which is what makes
+`tests/file_system_smoke.cpp` a test of the image that actually boots.
+
+路徑由 `lookup()` 逐段走訪，`.` 與 `..` 在走訪過程中處理，不先改寫字串；以
+`/` 開頭的路徑從根目錄開始，其他路徑從呼叫端給的 base 項目開始，shell 的
+相對路徑就是這樣解析的。名稱上限 55 個位元組，路徑上限 128 個位元組，巢狀
+深度上限 16 層，超過都是明確的失敗而不是截斷。
+
+`lookup()` walks a path component by component, handling `.` and `..` as it
+goes rather than rewriting the string first. A path starting with `/` is walked
+from the root and any other from the base entry the caller supplies, which is
+how the shell resolves a relative path. A name is at most 55 bytes, a path 128
+bytes, and nesting 16 levels deep; passing any of those is an explicit failure
+rather than a truncation.
+
+## 主控台 Shell / The console shell
+
+`shirley::shell::run()` 是核心啟動流程的最後一步，不會返回：開機之後，機器
+就是這個提示符。shell 跑在核心裡而不是 user 行程裡，因為行程還沒有辦法結束
+後把控制權交回給啟動它的人；`hello` 指令會先說明這件事，再把 CPU 交給嵌在
+核心裡的 user 程式。
+
+`shirley::shell::run()` is the last step of kernel start-up and never returns:
+after boot, the machine is this prompt. The shell runs inside the kernel rather
+than as a user process because a process cannot yet exit back to whatever
+started it; the `hello` command says so before handing the CPU to the user
+program embedded in the kernel.
+
+行編輯器從標準輸入取字元，佇列空的時候停在等待中斷的低功耗狀態，不輪詢任何
+裝置。按鍵可能剛好落在檢查與等待之間，那一次會等到下一個計時器中斷才醒來，
+最多 10 毫秒——為了省下這點延遲去輪詢鍵盤並不划算。回顯屬於行編輯器而不是
+驅動程式：空行時的 Backspace 必須什麼都不做，否則會把提示符擦掉。換行與回車
+都算送出一行，因為鍵盤驅動程式解出的是換行，序列終端機送的是回車。
+
+The line editor takes characters from standard input and, when the queue is
+empty, parks in a low-power wait for the next interrupt rather than polling
+anything. A keystroke can land between the check and the wait, in which case
+that pass sleeps until the next timer interrupt — at most 10 ms, which is not
+worth polling a keyboard to avoid. Echo belongs to the line editor rather than
+to a driver: a backspace on an empty line must do nothing, or it would erase
+the prompt. Both newline and carriage return end a line, because the keyboard
+driver decodes one and a serial terminal sends the other.
+
+指令有 `help`、`ls`、`cat`、`cd`、`pwd`、`stat`、`echo`、`mem`、`uptime`、
+`version`、`clear`、`hello`、`reboot` 與 `poweroff`。`cd` 儲存的是由項目本身
+組回來的絕對路徑，因此提示符顯示的永遠是正規化過的路徑，而不是使用者打進來
+的那串 `../..`。沒有輸入裝置的平台（例如 apple_silicon）不會顯示提示符：
+那只會騙人，因為永遠不會有字元進來。
+
+The commands are `help`, `ls`, `cat`, `cd`, `pwd`, `stat`, `echo`, `mem`,
+`uptime`, `version`, `clear`, `hello`, `reboot`, and `poweroff`. `cd` stores
+the absolute path rebuilt from the entry itself, so the prompt always shows a
+normalized path rather than the `../..` that was typed. A platform with no
+input device, such as apple_silicon, gets no prompt: it would only lie, because
+no character can ever arrive.
+
 ## 開機架構 / Boot architecture
 
 長期的正式開機路徑是：
@@ -511,7 +678,10 @@ Milestone M0 permits direct QEMU kernel loading for rapid development.
   `platform/qemu_arm64` 會讀取其 `/memory` 節點與記憶體保留區塊。
 * x86_64 使用 `arch/x86_64/boot.S` 中 512 位元組的 BIOS 開機磁區。它會收集
   E820 記憶體地圖、讀入核心、以 2 MiB 分頁對前 1 GiB 建立 identity mapping、
-  進入長模式，然後以 `RDI` 帶著記憶體地圖位址跳進核心。
+  進入長模式，然後以 `RDI` 帶著記憶體地圖位址跳進核心。核心分四次 BIOS 讀取
+  載入，每次 64 個磁區共 128 KiB：單次讀取的磁區數有上限，緩衝區也不能跨越
+  64 KiB 邊界。CMake 的 `--pad-to` 與映像大小檢查必須跟 `boot.S` 的
+  `sectors_per_read` 與 `kernel_reads` 一致，否則核心會被靜默截斷。
 * Apple Silicon 預期 `x0` 指向 Apple 的 `boot_args` 結構，與 iBoot 和 m1n1
   使用的契約相同。
 
@@ -521,7 +691,11 @@ Milestone M0 permits direct QEMU kernel loading for rapid development.
 * x86_64 uses a 512-byte BIOS boot sector in `arch/x86_64/boot.S`. It collects
   the E820 memory map, reads the kernel, identity-maps the first 1 GiB with
   2 MiB pages, enters long mode, and jumps to the kernel with the memory map
-  address in `RDI`.
+  address in `RDI`. The kernel arrives in four BIOS reads of 64 sectors each,
+  128 KiB in total: a single read can only move so many sectors and its buffer
+  must not cross a 64 KiB boundary. CMake's `--pad-to` and image size check
+  must agree with `sectors_per_read` and `kernel_reads` in `boot.S`, or the
+  kernel is silently truncated.
 * Apple Silicon expects `x0` to hold an Apple `boot_args` structure, the same
   contract iBoot and m1n1 use.
 
@@ -702,17 +876,41 @@ architectures, heap, ELF loader, userspace, minimal libc, C `main()`,
 ISA-specific work stays under `arch/`. The hello C program must actually
 execute in userspace.
 
+### M1.5 — 檔案系統與主控台 / file system and console
+
+開機的終點是一個可用的主控台。核心掛上唯讀的 SHRFS1 根檔案系統，然後進入
+核心內的 shell：`ls`、`cat`、`cd` 走的是真正掛載起來的檔案系統，每個字元都
+由中斷送達，沒有輸入時 CPU 停在等待中斷的狀態。x86_64 有 PS/2 鍵盤與序列埠
+兩個輸入裝置，ARM64 有 PL011 的接收路徑，字元都進入同一個共用佇列。
+
+Boot ends at a usable console. The kernel mounts the read-only SHRFS1 root file
+system and enters an in-kernel shell: `ls`, `cat`, and `cd` walk a file system
+that is really mounted, every character arrives through an interrupt, and with
+nothing to read the CPU waits for one. x86_64 has two input devices, the PS/2
+keyboard and the serial port; ARM64 has the PL011's receive path; and all of
+them feed the same shared queue.
+
+尚未完成的是寫入、每個指令一個行程（因此 `hello` 之後回不到提示符），以及
+真正的磁碟驅動程式——根檔案系統目前住在核心映像裡。
+
+Still missing: write support, a process per command (which is why the prompt
+does not come back after `hello`), and a real disk driver — the root file
+system lives inside the kernel image for now.
+
 ### 後續規劃 / Roadmap
 
 M2 搶佔式排程與執行緒（兩種架構的中斷與計時器都已在 M0.5 完成）；M3 行程與
-IPC；M4 VFS、initramfs 與 shell；M5 PCI/VirtIO、儲存與 MSI/MSI-X；M6 網路；
-M7 實體 x86_64 PC 啟用與 APIC/IOAPIC；M8 Apple Silicon 啟用；M9 GUI 與
-視窗系統。
+IPC，讓指令能以 user 行程執行並回到提示符；M4 完整 VFS：可寫入的檔案系統、
+多個掛載點，以及跑在 user 空間的 shell；M5 PCI/VirtIO、儲存與 MSI/MSI-X；
+M6 網路；M7 實體 x86_64 PC 啟用與 APIC/IOAPIC；M8 Apple Silicon 啟用；
+M9 GUI 與視窗系統。
 
 M2 preemptive scheduling and threads (interrupts and a timer landed on both
-architectures in M0.5); M3 processes and IPC; M4 VFS, initramfs, and shell;
-M5 PCI/VirtIO, storage, and MSI/MSI-X; M6 networking; M7 physical x86_64 PC
-bring-up and APIC/IOAPIC; M8 Apple Silicon bring-up; M9 GUI/window system.
+architectures in M0.5); M3 processes and IPC, so a command can run as a user
+process and return to the prompt; M4 a full VFS: writable file systems, several
+mount points, and a shell that runs in user space; M5 PCI/VirtIO, storage, and
+MSI/MSI-X; M6 networking; M7 physical x86_64 PC bring-up and APIC/IOAPIC;
+M8 Apple Silicon bring-up; M9 GUI/window system.
 
 ## 程式撰寫理念 / Coding philosophy
 

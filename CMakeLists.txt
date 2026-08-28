@@ -39,6 +39,23 @@ if(NOT SHIRLEY_ARCH OR NOT SHIRLEY_PLATFORM)
 endif()
 message(STATUS "ShirleyOS architecture=${SHIRLEY_ARCH} platform=${SHIRLEY_PLATFORM}")
 
+# 根檔案系統：rootfs/ 在建置時被打包成唯讀映像，並以 C++ 位元組陣列的形式
+# 產生出來，因此核心不需要磁碟驅動程式就有檔案系統可掛載。主機建置也用同一
+# 份產生的映像，測試才能檢驗真正會開機的那個映像。
+#
+# The root file system: rootfs/ is packed into a read-only image at build time
+# and emitted as a C++ byte array, so the kernel needs no disk driver to have a
+# file system to mount. The host build uses the same generated image, which is
+# what lets the tests check the very image that boots.
+set(SHIRLEY_ROOTFS_DIR ${CMAKE_SOURCE_DIR}/rootfs)
+set(SHIRLEY_ROOTFS_SOURCE ${CMAKE_CURRENT_BINARY_DIR}/rootfs_image.cpp)
+file(GLOB_RECURSE SHIRLEY_ROOTFS_FILES ${SHIRLEY_ROOTFS_DIR}/*)
+add_custom_command(OUTPUT ${SHIRLEY_ROOTFS_SOURCE}
+  COMMAND ${CMAKE_COMMAND} -DROOTFS=${SHIRLEY_ROOTFS_DIR} -DOUTPUT=${SHIRLEY_ROOTFS_SOURCE}
+          -P ${CMAKE_SOURCE_DIR}/cmake/make-rootfs.cmake
+  DEPENDS ${SHIRLEY_ROOTFS_FILES} ${CMAKE_SOURCE_DIR}/cmake/make-rootfs.cmake
+  COMMENT "Packing rootfs/ into a SHRFS1 image")
+
 # 與架構、平台都無關的核心程式碼。
 # Kernel code that depends on neither the architecture nor the platform.
 set(SHIRLEY_KERNEL_SOURCES
@@ -50,13 +67,20 @@ set(SHIRLEY_KERNEL_SOURCES
   kernel/syscall/syscall.cpp
   kernel/kernel_main.cpp
   kernel/format/number.cpp
+  kernel/fs/shrfs.cpp
+  kernel/fs/rootfs_mount.cpp
   kernel/interrupt/irq.cpp
+  kernel/io/console_input.cpp
   kernel/io/console_stream.cpp
   kernel/io/input_queue.cpp
   kernel/io/standard_streams.cpp
   kernel/memory/page_allocator.cpp
   kernel/process/scheduler.cpp
-  kernel/runtime/compiler_runtime.cpp)
+  kernel/runtime/compiler_runtime.cpp
+  kernel/shell/shell.cpp
+  kernel/text/string.cpp
+  drivers/block/ram_disk.cpp
+  ${SHIRLEY_ROOTFS_SOURCE})
 
 # 與硬體無關的裝置驅動程式邏輯，主機建置與核心建置共用。
 # Hardware-independent device driver logic, shared by the host build and the
@@ -80,11 +104,16 @@ if(SHIRLEY_ARCH STREQUAL host)
     kernel/elf/user_loader.cpp
     kernel/syscall/syscall.cpp
     kernel/format/number.cpp
+    kernel/fs/shrfs.cpp
+    kernel/fs/rootfs_mount.cpp
+    kernel/io/console_input.cpp
     kernel/io/input_queue.cpp
     kernel/io/standard_streams.cpp
     kernel/memory/page_allocator.cpp
     kernel/process/scheduler.cpp
+    kernel/text/string.cpp
     drivers/block/ram_disk.cpp
+    ${SHIRLEY_ROOTFS_SOURCE}
     ${SHIRLEY_DRIVER_SOURCES}
     boot/common/elf64.cpp
     ${SHIRLEY_FIRMWARE_E820}
@@ -95,7 +124,8 @@ if(SHIRLEY_ARCH STREQUAL host)
   target_compile_definitions(shirley-kernel-core PRIVATE SHIRLEY_HOST)
 
   enable_testing()
-  foreach(test host_smoke core_services_smoke platform_model_smoke boot_loader_smoke input_smoke)
+  foreach(test host_smoke core_services_smoke platform_model_smoke boot_loader_smoke input_smoke
+               file_system_smoke)
     string(REPLACE "_" "-" test_name ${test})
     add_executable(shirley-${test_name} tests/${test}.cpp)
     target_link_libraries(shirley-${test_name} PRIVATE shirley-kernel-core)
@@ -219,6 +249,7 @@ if(SHIRLEY_PLATFORM STREQUAL qemu_x86_64)
     platform/qemu_x86_64/boot_protocol.cpp
     platform/qemu_x86_64/platform.cpp
     platform/pc/serial_console.cpp
+    platform/pc/serial_input.cpp
     platform/pc/pic.cpp
     platform/pc/pit.cpp
     platform/pc/ps2_keyboard.cpp
@@ -232,6 +263,7 @@ elseif(SHIRLEY_PLATFORM STREQUAL qemu_x86_64_uefi)
     platform/qemu_x86_64_uefi/boot_protocol.cpp
     platform/qemu_x86_64_uefi/platform.cpp
     platform/pc/serial_console.cpp
+    platform/pc/serial_input.cpp
     platform/pc/pic.cpp
     platform/pc/pit.cpp
     platform/pc/ps2_keyboard.cpp
@@ -244,6 +276,7 @@ elseif(SHIRLEY_PLATFORM STREQUAL qemu_arm64)
     platform/qemu_arm64/platform.cpp
     platform/arm/gicv2.cpp
     platform/arm/generic_timer.cpp
+    platform/arm/pl011_input.cpp
     ${SHIRLEY_FIRMWARE_FDT})
 elseif(SHIRLEY_PLATFORM STREQUAL qemu_arm64_uefi)
   # 同一台 QEMU virt，只是換成 EDK2 韌體，因此沿用同一顆 PL011 驅動程式與
@@ -255,7 +288,8 @@ elseif(SHIRLEY_PLATFORM STREQUAL qemu_arm64_uefi)
     platform/qemu_arm64/console.cpp
     platform/qemu_arm64_uefi/platform.cpp
     platform/arm/gicv2.cpp
-    platform/arm/generic_timer.cpp)
+    platform/arm/generic_timer.cpp
+    platform/arm/pl011_input.cpp)
   set(SHIRLEY_UEFI_PLATFORM ON)
 elseif(SHIRLEY_PLATFORM STREQUAL apple_silicon)
   set(SHIRLEY_PLATFORM_SOURCES
@@ -269,8 +303,20 @@ else()
 endif()
 set(SHIRLEY_LINKER_SCRIPT ${CMAKE_SOURCE_DIR}/platform/${SHIRLEY_PLATFORM}/kernel.ld)
 
+# -fno-threadsafe-statics：函式內的 static 物件預設會產生 __cxa_guard_* 呼叫，
+# 那是 libstdc++ 的執行期常式，裸機核心沒有可連結的版本。核心目前只在單一
+# 核心上執行，第一次初始化不可能被另一個執行緒插隊，因此關掉這層保護是安全
+# 的；等到有第二顆核心時，這個假設要跟著重新檢視。
+#
+# -fno-threadsafe-statics: a function-local static object otherwise emits
+# __cxa_guard_* calls, which are libstdc++ runtime routines a freestanding
+# kernel has no implementation to link against. The kernel runs on a single
+# core today, so no other thread can race the first initialization and dropping
+# the guard is safe. That assumption needs revisiting when a second core
+# appears.
 set(SHIRLEY_KERNEL_FLAGS
   -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fno-pic
+  -fno-threadsafe-statics
   -Wall -Wextra ${SHIRLEY_ARCH_FLAGS})
 
 # 開啟後鍵盤驅動程式會印出每一個原始掃描碼。預設關閉：正常開機的主控台
@@ -324,15 +370,17 @@ if(SHIRLEY_PLATFORM STREQUAL qemu_x86_64)
             ${CMAKE_SOURCE_DIR}/platform/qemu_x86_64/boot.ld
     COMMAND_EXPAND_LISTS)
 
-  # 開機磁區以單次 BIOS 呼叫讀取 127 個磁區，因此核心固定補零到那個大小；
-  # 內容超出時 objcopy 會產生更大的檔案，由大小檢查及早失敗。
-  # The boot sector reads 127 sectors in a single BIOS call, so the kernel is
-  # always padded to exactly that size. If the content overflows, objcopy
-  # produces a larger file and the size check fails the build.
+  # 開機磁區分四次 BIOS 呼叫讀取 256 個磁區，因此核心固定補零到 128 KiB；
+  # 內容超出時 objcopy 會產生更大的檔案，由大小檢查及早失敗。這裡的數字必須
+  # 與 arch/x86_64/boot.S 的 sectors_per_read 與 kernel_reads 一致。
+  # The boot sector reads 256 sectors in four BIOS calls, so the kernel is
+  # always padded to exactly 128 KiB. If the content overflows, objcopy
+  # produces a larger file and the size check fails the build. These numbers
+  # must agree with sectors_per_read and kernel_reads in arch/x86_64/boot.S.
   add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/kernel.bin
-    COMMAND ${SHIRLEY_OBJCOPY} -O binary --pad-to=0x1fe00
+    COMMAND ${SHIRLEY_OBJCOPY} -O binary --pad-to=0x30000
             ${CMAKE_CURRENT_BINARY_DIR}/shirley-kernel.elf ${CMAKE_CURRENT_BINARY_DIR}/kernel.bin
-    COMMAND ${CMAKE_COMMAND} -DIMAGE=${CMAKE_CURRENT_BINARY_DIR}/kernel.bin -DMAX_BYTES=65024
+    COMMAND ${CMAKE_COMMAND} -DIMAGE=${CMAKE_CURRENT_BINARY_DIR}/kernel.bin -DMAX_BYTES=131072
             -P ${CMAKE_SOURCE_DIR}/cmake/check-image-size.cmake
     DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/shirley-kernel.elf
             ${CMAKE_SOURCE_DIR}/cmake/check-image-size.cmake)

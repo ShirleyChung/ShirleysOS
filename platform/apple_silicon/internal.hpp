@@ -8,6 +8,10 @@ namespace shirley::platform::apple {
 // The debug UART base address differs per Apple SoC, so the platform layer
 // selects it at boot.
 void console_set_uart_base(std::uintptr_t base);
+// 目前使用中的 UART 位址；平台層列出必須保持映射的裝置記憶體時會用到。
+// The UART address currently in use, needed when the platform layer lists the
+// device memory that has to stay mapped.
+std::uintptr_t console_uart_base();
 
 // AIC（Apple Interrupt Controller）的基底位址同樣隨機型不同。初始化會一併
 // 把分辨來源的處理常式掛上 IRQ 例外入口，失敗時回傳 false。
