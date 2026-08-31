@@ -15,8 +15,8 @@ not come back until the machine restarts.
 
 ## How a keystroke arrives
 
-    key -> device interrupt -> driver decodes it -> io::console_input()
-        -> standard input -> read_line()
+    key -> device interrupt -> driver decodes it -> the driver's ring buffer
+        -> kbd0 -> console -> standard input -> read_line()
 
 Nothing polls. When the queue is empty the line editor waits for the next
 interrupt in a low-power state, so an idle prompt costs no cycles. A keystroke
@@ -31,10 +31,26 @@ other.
 
 ## Commands
 
-`help` lists them all. `ls`, `cat`, `cd`, `pwd`, and `stat` work on the mounted
-file system; `mem`, `uptime`, and `version` report what the kernel knows about
-itself; `reboot` and `poweroff` go through the platform's power control.
+`help` lists them all. `ls`, `cat`, `cd`, `pwd`, and `stat` work on the VFS;
+`mem`, `uptime`, `devices`, `mount`, and `version` report what the kernel knows
+about itself; `blk` dumps a block device a sector at a time; `exec` and `hello`
+run a program; `reboot` and `poweroff` go through the platform's power control.
 
-Paths are resolved by `fs::lookup()` against the working directory, and `cd`
-stores the path it rebuilds from the entry itself, so the prompt always shows a
-normalized path rather than the `../..` that was typed.
+`devices` prints the device registry and marks which devices are feeding
+console input. The shell sees a name and a kind and nothing else: that IRQ1 and
+port 0x60 sit behind `kbd0` is not something it can find out.
+
+Every path goes through `shirley::vfs`, so `cat /etc/motd` and `cat /dev/kbd0`
+are the same command doing the same thing — the shell does not know the two
+paths are answered by different file systems. `cd` stores the normalized
+absolute path the resolved node carries, so the prompt shows that rather than
+the `../..` that was typed.
+
+`echo ... > path` is the one command that writes. It exists to make the write
+half reachable from the prompt: `echo hi > /dev/uart0` puts two characters on
+the serial line, `> /dev/null` discards them, and `> /etc/version` is refused at
+`open()` because SHRFS1 is read-only.
+
+`exec <path>` reads a program out of the file system and hands it to the ELF
+loader; `hello` is `exec /bin/hello`. The shell supplies a path and nothing
+else: which device the file came off is not something it can see.

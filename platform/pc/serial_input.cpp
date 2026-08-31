@@ -2,6 +2,7 @@
 
 #include "shirley/arch/x86_64/port_io.hpp"
 #include "shirley/console.hpp"
+#include "shirley/device.hpp"
 #include "shirley/io.hpp"
 #include "shirley/irq.hpp"
 
@@ -12,6 +13,15 @@ using arch::x86_64::inb;
 using arch::x86_64::outb;
 
 std::uint64_t characters = 0;
+
+// UART 自己的環狀緩衝區，也就是 uart0 的接收內容。鍵盤有自己的一份，序列埠
+// 有自己的一份：每個裝置都應該可以被單獨讀取，匯流是主控台層的事，不是驅動
+// 程式的事。
+//
+// The UART's own ring buffer, which is what uart0 receives into. The keyboard
+// has one and the serial port has one: every device should be readable on its
+// own, and merging them is the console layer's job rather than a driver's.
+io::InputQueue receive_queue;
 
 // 序列埠終端機送來的 Enter 是回車符，Backspace 通常是 DEL；主控台的行編輯器
 // 只認得 '\n' 與 '\b'，所以在這裡就換成它認得的形式，讓鍵盤與序列埠送進
@@ -48,7 +58,12 @@ void serial_interrupt(unsigned, void*) {
         if ((inb(com1_line_status) & com1_data_ready) == 0) return;
         const auto value = inb(com1_data);
         ++characters;
-        io::console_input_push(normalize(value));
+        // 中斷處理常式只把字元放進緩衝區。緩衝區滿了就丟掉，不等待任何人：
+        // 中斷情境不可以阻塞。
+        //
+        // The handler only puts the character in the buffer. A full buffer
+        // drops it and waits for nobody: interrupt context must not block.
+        (void)receive_queue.push(normalize(value));
     }
 }
 
@@ -56,6 +71,7 @@ void serial_interrupt(unsigned, void*) {
 
 bool serial_input_initialize() {
     characters = 0;
+    receive_queue.clear();
     // OUT2 沒有接通時 UART 的中斷線根本到不了中斷控制器，因此先確認它是開的。
     // The UART's interrupt line never reaches the controller while OUT2 is
     // low, so it is asserted before anything else.
@@ -83,11 +99,19 @@ bool serial_input_initialize() {
         console::write("[IRQ] serial IRQ4 registration failed\n");
         return false;
     }
-    io::attach_console_input();
+    // uart0 是否已經在註冊表裡不影響這裡：主控台接的是裝置物件本身，而不是
+    // 一個名字。序列埠沒有接收中斷時仍然是可寫的裝置，只是不會有輸入。
+    //
+    // Whether uart0 is already in the registry does not matter here: the
+    // console attaches the device object itself rather than a name. Without a
+    // receive interrupt the serial port is still a writable device; it simply
+    // produces no input.
+    console::attach_input(*serial_device());
     console::write("[IRQ] serial console input enabled on IRQ4\n");
     return true;
 }
 
+io::InputQueue& serial_receive_queue() { return receive_queue; }
 std::uint64_t serial_input_characters() { return characters; }
 
 } // namespace shirley::platform::pc

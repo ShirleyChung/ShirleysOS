@@ -39,10 +39,20 @@ void initialize(const BootInfo& boot_info) {
     // drivers reprogram the hardware into the state the kernel wants instead
     // of inheriting whatever survived ExitBootServices.
     const bool timer = pc::pit_initialize(pc::pit_default_frequency);
+    // COM1 從主控台後端初始化起就在輸出，因此先把它登記成 uart0，之後接收
+    // 中斷成不成功都不影響它是一個可寫入的裝置。
+    //
+    // COM1 has been printing since the console backend came up, so it is
+    // published as uart0 first; whether the receive interrupt succeeds
+    // afterwards does not change that it is a writable device.
+    pc::serial_device_register();
     pc::ps2_keyboard_initialize();
-    // 序列埠終端機和鍵盤一樣是主控台輸入來源；兩者共用同一個佇列。
-    // A serial terminal is as much a console input source as the keyboard is,
-    // and both share the same queue.
+    // 序列埠終端機和鍵盤一樣是主控台輸入來源；兩者各有自己的裝置與緩衝區，
+    // 由主控台層匯流成一條輸入。
+    //
+    // A serial terminal is as much a console input source as the keyboard is.
+    // Each has its own device and its own buffer, and the console layer merges
+    // them into one input.
     pc::serial_input_initialize();
     platform_capabilities.serial_console = true;
     platform_capabilities.interrupt_controller = true;

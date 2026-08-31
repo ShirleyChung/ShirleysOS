@@ -1,6 +1,8 @@
 #include "shirley/platform/arm/pl011.hpp"
 
 #include "shirley/console.hpp"
+#include "shirley/device.hpp"
+#include "shirley/input_queue.hpp"
 #include "shirley/io.hpp"
 #include "shirley/irq.hpp"
 
@@ -12,6 +14,10 @@ namespace {
 // backend uses.
 constexpr unsigned data = 0;
 constexpr unsigned flag = 6;
+// FR 的位元 5 表示傳送 FIFO 已滿；uart0 的寫入需要它。
+// Bit 5 of the flag register means the transmit FIFO is full, which a write to
+// uart0 needs.
+constexpr unsigned transmit_full = 1u << 5;
 constexpr unsigned interrupt_fifo_level = 13;
 constexpr unsigned interrupt_mask = 14;
 constexpr unsigned interrupt_clear = 17;
@@ -39,6 +45,42 @@ constexpr unsigned clear_all = 0x7ff;
 volatile unsigned int* uart = nullptr;
 std::uint64_t characters = 0;
 
+// UART 自己的環狀緩衝區，也就是 uart0 的接收內容。
+// The UART's own ring buffer, which is what uart0 receives into.
+io::InputQueue receive_queue;
+
+io::Result uart_read(device::Device&, void* buffer, std::size_t length) {
+    return receive_queue.read(buffer, length);
+}
+
+// uart0 的傳送。平台的主控台後端寫的是同一組暫存器，這裡不共用它是因為
+// 後端屬於各平台（QEMU virt 與其他 PL011 機器各有一份），而這個驅動程式是
+// 共用的；兩邊都只是「FIFO 有空位就放一個位元組」，重複的是那一件事本身。
+//
+// uart0's transmit side. The platform console backend writes the same
+// registers; it is not shared here because a backend belongs to its platform —
+// QEMU virt and other PL011 machines each have their own — while this driver
+// is common to all of them. Both amount to "put a byte in when the FIFO has
+// room", and that is the whole of the duplication.
+io::Result uart_write(device::Device&, const void* buffer, std::size_t length) {
+    if (length != 0 && buffer == nullptr) return {0, io::Error::InvalidArgument};
+    if (uart == nullptr) return {0, io::Error::Unsupported};
+    const auto* text = static_cast<const char*>(buffer);
+    for (std::size_t i = 0; i < length; ++i) {
+        if (text[i] == '\n') {
+            while (uart[flag] & transmit_full) {}
+            uart[data] = '\r';
+        }
+        while (uart[flag] & transmit_full) {}
+        uart[data] = static_cast<unsigned char>(text[i]);
+    }
+    return {length, io::Error::None};
+}
+
+constexpr device::Operations uart_operations{nullptr, nullptr, uart_read, uart_write, nullptr};
+
+constinit device::Device uart_device{"uart0", device::Type::Character, uart_operations};
+
 // 終端機的 Enter 是回車符、Backspace 通常是 DEL，行編輯器只認得 '\n' 與
 // '\b'，因此在這裡就換過來。
 //
@@ -64,7 +106,10 @@ void uart_interrupt(unsigned, void*) {
     for (unsigned byte = 0; byte < bytes_per_interrupt; ++byte) {
         if ((uart[flag] & receive_empty) != 0) break;
         ++characters;
-        io::console_input_push(normalize(uart[data]));
+        // 中斷處理常式只把字元放進緩衝區；滿了就丟掉，不阻塞。
+        // The handler only puts the character in the buffer; a full buffer
+        // drops it rather than blocking.
+        (void)receive_queue.push(normalize(uart[data]));
     }
     uart[interrupt_clear] = clear_all;
 }
@@ -75,6 +120,7 @@ bool pl011_input_initialize(std::uintptr_t base, unsigned irq) {
     if (base == 0) return false;
     uart = reinterpret_cast<volatile unsigned int*>(base);
     characters = 0;
+    receive_queue.clear();
     uart[interrupt_fifo_level] = receive_level_eighth;
     uart[interrupt_clear] = clear_all;
     uart[interrupt_mask] = receive_interrupt | receive_timeout_interrupt;
@@ -84,11 +130,18 @@ bool pl011_input_initialize(std::uintptr_t base, unsigned irq) {
         uart = nullptr;
         return false;
     }
-    io::attach_console_input();
+    if (device::register_device(uart_device) != device::Status::Ok) {
+        console::write("[device] uart0 registration failed\n");
+        irq::release(irq);
+        uart = nullptr;
+        return false;
+    }
+    console::attach_input(uart_device);
     console::write("[IRQ] UART console input enabled\n");
     return true;
 }
 
+device::Device* pl011_device() { return &uart_device; }
 std::uint64_t pl011_input_characters() { return characters; }
 
 } // namespace shirley::platform::arm

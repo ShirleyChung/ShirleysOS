@@ -17,4 +17,11 @@ this size and removes the possibility of a listing disagreeing with the
 entries it names.
 
 The kernel reads the image through the ordinary block device interface, so the
-same file system code will work over a real disk driver once one exists.
+same file system code will work over a real disk driver once one exists. That
+disk is `/dev/ram0`, and `blk /dev/ram0 0` prints the header described above —
+the very bytes checked when this volume was mounted.
+
+Everything above the file system reaches it through the VFS, which mounts this
+volume at `/` and the device registry at `/dev`. `/bin/hello` is an ordinary
+file in here; `exec /bin/hello` reads it out through the same `open` and `read`
+that `cat` uses and hands it to the ELF loader.

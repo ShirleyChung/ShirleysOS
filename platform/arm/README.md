@@ -8,7 +8,7 @@ a machine directory, so nothing here reads a machine's identity.
 | ---- | ------ |
 | `gicv2.cpp` | Generic Interrupt Controller version 2: distributor and CPU interface |
 | `generic_timer.cpp` | ARM architected timer on PPI 30, at 100 Hz |
-| `pl011_input.cpp` | PL011 UART receive path, the console's only input device on these machines |
+| `pl011_input.cpp` | PL011 UART receive path and the `uart0` device, the console's only input on these machines |
 
 ## GICv2
 
@@ -43,7 +43,14 @@ receive-timeout interrupts are unmasked, and the FIFO level is set to one
 eighth: a terminal sends a single character at a time, well below any higher
 trigger level, and without the timeout interrupt those keystrokes would sit in
 the FIFO forever. The handler drains until the FIFO is empty, because a
-leftover byte keeps the interrupt pending.
+leftover byte keeps the interrupt pending, and it does nothing but push into
+its ring buffer.
+
+That buffer is what the `uart0` device reads from, and the device is attached
+to the console once the IRQ is really live. `uart0` can be written to as well,
+through the same registers; the console backend is not shared for that because
+a backend belongs to its platform while this driver is common to every PL011
+machine.
 
 ## Architected timer
 

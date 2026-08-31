@@ -1,5 +1,7 @@
 #pragma once
 
+#include "shirley/device.hpp"
+
 #include <cstddef>
 
 namespace shirley::fs {
@@ -19,9 +21,16 @@ namespace shirley::fs {
 void* rootfs_image();
 std::size_t rootfs_image_size();
 
-// 把嵌入的映像包成 RAM disk 並掛載成根檔案系統；成功時回傳 true。
-// Wrap the embedded image in a RAM disk and mount it as the root file system;
-// returns true on success.
+// 把嵌入的映像包成 RAM disk、掛載成根檔案系統，並把那個磁碟以 ram0 的名字
+// 登記到裝置註冊表；成功時回傳 true。
+//
+// Wrap the embedded image in a RAM disk, mount it as the root file system, and
+// publish that disk in the device registry as ram0; returns true on success.
 bool mount_rootfs();
+
+// 根檔案系統所在的區塊裝置，等同於 device::find("ram0")。
+// The block device the root file system lives on, the same thing
+// device::find("ram0") returns.
+device::Device& rootfs_device();
 
 } // namespace shirley::fs

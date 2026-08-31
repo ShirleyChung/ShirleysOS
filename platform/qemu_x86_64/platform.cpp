@@ -40,15 +40,22 @@ void initialize(const BootInfo& boot_info) {
     // are still disabled here and only start arriving once kernel_main() calls
     // arch::enable_interrupts().
     const bool timer = pc::pit_initialize(pc::pit_default_frequency);
-    pc::ps2_keyboard_initialize();
-    // 這台機器有兩個輸入裝置：實體鍵盤，以及序列埠另一端的終端機。兩者都
-    // 把字元推進同一個主控台佇列，因此 shell 不必知道使用者是坐在螢幕前
-    // 還是接在序列線上。
+    // COM1 在主控台後端初始化時就已經在輸出了，因此不論接收中斷之後成不成功，
+    // 它都是一個真實存在、可以寫入的裝置，先登記起來。
     //
-    // This machine has two input devices: the keyboard, and the terminal on
-    // the other end of the serial line. Both push into the same console queue,
-    // so the shell never needs to know whether the user is at the screen or on
-    // a serial cable.
+    // COM1 has been printing since the console backend came up, so it is a
+    // real, writable device whether or not the receive interrupt succeeds
+    // afterwards; it is published first.
+    pc::serial_device_register();
+    pc::ps2_keyboard_initialize();
+    // 這台機器有兩個輸入裝置：實體鍵盤（kbd0），以及序列埠另一端的終端機
+    // （uart0）。兩者各自維護自己的環狀緩衝區，再一起接上主控台，因此 shell
+    // 不必知道使用者是坐在螢幕前還是接在序列線上。
+    //
+    // This machine has two input devices: the keyboard (kbd0) and the terminal
+    // on the other end of the serial line (uart0). Each keeps its own ring
+    // buffer and both attach to the console, so the shell never needs to know
+    // whether the user is at the screen or on a serial cable.
     pc::serial_input_initialize();
     platform_capabilities.serial_console = true;
     platform_capabilities.interrupt_controller = true;

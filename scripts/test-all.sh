@@ -8,6 +8,23 @@ echo "ShirleyOS Integration Tests"
 command -v qemu-system-aarch64 >/dev/null 2>&1 || { echo "Missing qemu-system-aarch64. Install with: brew install qemu" >&2; exit 1; }
 command -v qemu-system-x86_64 >/dev/null 2>&1 || { echo "Missing qemu-system-x86_64. Install with: brew install qemu" >&2; exit 1; }
 
+# 開機測試由 Python 驅動。Windows 的 PATH 上常常有一個叫 python3 的 Microsoft
+# Store 佔位程式，它存在但一執行就失敗，因此這裡實際執行一次版本查詢，第一個
+# 真的答得出來的直譯器才算數。
+#
+# The boot tests are driven by Python. On Windows the PATH often carries a
+# Microsoft Store placeholder named python3 that exists but fails the moment it
+# runs, so each candidate is actually executed and the first interpreter that
+# answers is the one used.
+python=
+for candidate in python3 python; do
+  if command -v "$candidate" >/dev/null 2>&1 && "$candidate" --version >/dev/null 2>&1; then
+    python=$candidate
+    break
+  fi
+done
+[ -n "$python" ] || { echo "Missing a working python3. Install Python 3 and ensure it is in PATH." >&2; exit 1; }
+
 # 主機測試涵蓋與架構無關的核心元件、韌體資料格式解析、開機載入器邏輯、
 # 不碰硬體的輸入解碼層，以及根檔案系統映像本身。
 # The host tests cover the architecture-neutral kernel components, the firmware
@@ -45,21 +62,37 @@ for target in arm64 x86_64 arm64_uefi x86_64_uefi; do
   printf "[%-11s] boot  ... " "$target"
   qemu=qemu-system-x86_64
   case "$target" in arm64*) qemu=qemu-system-aarch64 ;; esac
-  python3 - "$qemu" "$artifact" "$target" "$firmware" <<'PY'
-import os, re, socket, subprocess, sys, tempfile, threading, time
+  "$python" - "$qemu" "$artifact" "$target" "$firmware" <<'PY'
+import re, socket, subprocess, sys, threading, time
 
 qemu, artifact, target, firmware = sys.argv[1:]
 x86 = not target.startswith('arm64')
 
 # x86 目標會透過 QEMU 監控介面注入真正的按鍵事件，藉此驗證中斷驅動的鍵盤
-# 路徑，因此監控介面要接到一個 unix socket，而不是關掉。
+# 路徑，因此監控介面要接出來，而不是關掉。
+#
+# 監控介面接在 loopback 的 TCP 埠上而不是 unix socket：Windows 的 Python 沒有
+# AF_UNIX，接不上去就等於整條 IRQ1 的驗證被靜靜跳過。TCP 在三種系統上都能用。
+# 埠號先綁一個臨時 socket 問系統要，再讓給 QEMU。
 #
 # The x86 targets inject genuine key events through the QEMU monitor to verify
-# the interrupt-driven keyboard path, so the monitor is wired to a unix socket
-# rather than turned off.
-monitor_path = os.path.join(tempfile.mkdtemp(), 'monitor.sock') if x86 else None
+# the interrupt-driven keyboard path, so the monitor is exposed rather than
+# turned off.
+#
+# It is exposed on a loopback TCP port rather than a unix socket: Python on
+# Windows has no AF_UNIX, and failing to connect would quietly skip the whole
+# IRQ1 verification. TCP works on all three systems. The port is obtained by
+# binding a throwaway socket and then handing the number to QEMU.
+def free_port():
+    probe = socket.socket()
+    probe.bind(('127.0.0.1', 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    return port
+
+monitor_port = free_port() if x86 else None
 args = [qemu, '-m', '512M', '-nographic', '-serial', 'stdio']
-args += ['-monitor', 'unix:%s,server,nowait' % monitor_path] if x86 else ['-monitor', 'none']
+args += ['-monitor', 'tcp:127.0.0.1:%d,server,nowait' % monitor_port] if x86 else ['-monitor', 'none']
 if target == 'arm64':
     args += ['-machine', 'virt', '-cpu', 'cortex-a72', '-kernel', artifact]
 elif target == 'x86_64':
@@ -157,14 +190,19 @@ if not wait_for(prompt, timeout):
 # of its input over the serial port, which the shared commands below cover.
 keyboard = 'not attempted'
 if x86:
-    monitor = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    monitor = socket.socket()
     connected = False
     for _ in range(50):
         try:
-            monitor.connect(monitor_path)
+            monitor.connect(('127.0.0.1', monitor_port))
             connected = True
             break
         except OSError:
+            # 連線失敗後的 socket 不能再重試，換一個新的。
+            # A socket cannot be retried after a failed connect; take a fresh
+            # one.
+            monitor.close()
+            monitor = socket.socket()
             time.sleep(0.1)
     if not connected:
         keyboard = 'SKIP (QEMU monitor socket unavailable)'
@@ -192,6 +230,61 @@ answer = type_line('ls /')
 expect(answer, 'README.md', 'ls /')
 expect(answer, 'etc/', 'ls /')
 expect(answer, 'docs/', 'ls /')
+# /dev 是 devfs 的掛載點，根檔案系統裡並沒有這個目錄；它出現在清單裡就代表
+# VFS 真的把掛載點併進了父目錄的內容。
+#
+# /dev is devfs's mount point and no such directory exists in the root file
+# system; its appearance in the listing is what proves the VFS really folds a
+# mount point into its parent's content.
+expect(answer, 'dev/', 'ls /')
+expect(answer, 'bin/', 'ls /')
+
+# 兩個檔案系統掛在同一個名字空間底下。
+# Two file systems under one namespace.
+answer = type_line('mount')
+expect(answer, 'shrfs', 'mount')
+expect(answer, 'devfs', 'mount')
+
+# devfs 的內容就是裝置註冊表：開機時列出來的那些裝置，這裡要一個不少。
+# devfs's content is the device registry: every device the boot log listed has
+# to be here.
+answer = type_line('ls /dev')
+expect(answer, 'console', 'ls /dev')
+expect(answer, 'null', 'ls /dev')
+expect(answer, 'uart0', 'ls /dev')
+expect(answer, 'ram0', 'ls /dev')
+
+# 根檔案系統所在的磁碟本身也是一個裝置，因此可以 open() 之後直接讀它的磁區。
+# 第 0 塊的開頭就是 SHRFS1 的識別字，也就是掛載時檢查的同一份位元組——證明
+# 走的真的是區塊層，而不是又去讀了一次檔案。
+#
+# The disk the root file system lives on is a device too, so its sectors can be
+# read straight after an open(). Block 0 starts with the SHRFS1 magic, the very
+# bytes checked at mount time, which proves this went through the block layer
+# rather than reading a file again.
+answer = type_line('blk /dev/ram0 0')
+expect(answer, 'SHRFS1', 'blk /dev/ram0 0')
+expect(answer, '53 48 52 46 53 31', 'blk /dev/ram0 0')
+
+answer = type_line('stat /dev/ram0')
+expect(answer, 'block', 'stat /dev/ram0')
+expect(answer, 'devfs', 'stat /dev/ram0')
+
+# 寫入的那一半。導向 /dev/uart0 的位元組真的會從序列埠出來，因此看得到它就
+# 代表 vfs::write() 走到了驅動程式；唯讀的檔案系統則要在 open() 就拒絕，而
+# 不是等到寫下去才失敗。
+#
+# The write half. Bytes redirected to /dev/uart0 really do leave by the serial
+# port, so seeing them means vfs::write() reached the driver; a read-only file
+# system has to refuse at open() rather than failing once something was
+# written.
+answer = type_line('echo through the vfs > /dev/uart0')
+expect(answer, 'through the vfs', 'echo > /dev/uart0')
+answer = type_line('echo discarded > /dev/null')
+if 'discarded' in answer.replace('echo discarded > /dev/null', ''):
+    fail('/dev/null echoed back what was written to it')
+answer = type_line('echo nope > /etc/version')
+expect(answer, 'read-only file system', 'echo > a read-only file')
 
 answer = type_line('cd /etc')
 answer = type_line('ls')
@@ -223,12 +316,22 @@ if match is None:
 if int(match.group(2)) == 0:
     fail('The timer interrupt never arrived')
 
-# user 程式最後才跑：它會接管 CPU，之後 shell 不會再回來。
+# user 程式最後才跑：它會接管 CPU，之後 shell 不會再回來。它現在是檔案系統
+# 裡的一個檔案，因此先確認 /bin/hello 真的在那裡，再讓 exec 從那個路徑把它
+# 讀出來執行——整條路是 VFS 開檔、讀檔，然後交給 ELF loader。
+#
 # The user program runs last: it takes over the CPU and the shell does not come
-# back afterwards.
-type_line('hello', settle=2.0)
+# back afterwards. It is a file in the file system now, so /bin/hello is first
+# confirmed to be there and then exec reads it from that path and runs it — the
+# whole way through is the VFS opening and reading a file and handing it to the
+# ELF loader.
+answer = type_line('stat /bin/hello')
+expect(answer, '/bin/hello', 'stat /bin/hello')
+expect(answer, 'shrfs', 'stat /bin/hello')
+
+type_line('exec /bin/hello', settle=2.0)
 if not wait_for("Hello! Shirley's OS.", 5):
-    fail('The embedded user program did not run from the shell')
+    fail('The user program was not loaded from /bin/hello and run')
 
 process.kill()
 reader.join(timeout=2)

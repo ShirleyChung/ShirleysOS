@@ -50,27 +50,60 @@ message(STATUS "ShirleyOS architecture=${SHIRLEY_ARCH} platform=${SHIRLEY_PLATFO
 set(SHIRLEY_ROOTFS_DIR ${CMAKE_SOURCE_DIR}/rootfs)
 set(SHIRLEY_ROOTFS_SOURCE ${CMAKE_CURRENT_BINARY_DIR}/rootfs_image.cpp)
 file(GLOB_RECURSE SHIRLEY_ROOTFS_FILES ${SHIRLEY_ROOTFS_DIR}/*)
+
+# 核心目標會把編出來的 user 程式一起打包成 /bin/hello，因此開機之後那個程式
+# 是檔案系統裡的一個檔案，由 VFS 讀出、交給 ELF loader 執行，而不是連結進
+# 核心的一段位元組。它是建置產物，所以不放在 rootfs/ 裡；每個架構編出來的
+# 內容也本來就不一樣。
+#
+# 主機建置沒有交叉工具鏈，編不出 user 程式，因此它的映像就是 rootfs/ 本身。
+# 主機測試檢查的是那些內容；/bin/hello 這條路由 QEMU 的開機測試驗證。
+#
+# A kernel target packs the user program it builds in as /bin/hello, so after
+# boot that program is a file in the file system, read by the VFS and handed to
+# the ELF loader rather than linked into the kernel. It is a build product, so
+# it does not live in rootfs/, and each architecture builds a different one
+# anyway.
+#
+# The host build has no cross toolchain and builds no user program, so its
+# image is rootfs/ exactly. The host tests check that content; the /bin/hello
+# path is covered by the QEMU boot tests.
+set(SHIRLEY_ROOTFS_EXTRA)
+set(SHIRLEY_ROOTFS_EXTRA_FILES)
+if(NOT SHIRLEY_ARCH STREQUAL host)
+  set(SHIRLEY_USER_DIR ${CMAKE_CURRENT_BINARY_DIR}/user-hello)
+  set(SHIRLEY_USER_ELF ${SHIRLEY_USER_DIR}/hello.elf)
+  set(SHIRLEY_ROOTFS_EXTRA bin/hello=${SHIRLEY_USER_ELF})
+  set(SHIRLEY_ROOTFS_EXTRA_FILES ${SHIRLEY_USER_ELF})
+endif()
+
 add_custom_command(OUTPUT ${SHIRLEY_ROOTFS_SOURCE}
   COMMAND ${CMAKE_COMMAND} -DROOTFS=${SHIRLEY_ROOTFS_DIR} -DOUTPUT=${SHIRLEY_ROOTFS_SOURCE}
+          "-DEXTRA=${SHIRLEY_ROOTFS_EXTRA}"
           -P ${CMAKE_SOURCE_DIR}/cmake/make-rootfs.cmake
-  DEPENDS ${SHIRLEY_ROOTFS_FILES} ${CMAKE_SOURCE_DIR}/cmake/make-rootfs.cmake
+  DEPENDS ${SHIRLEY_ROOTFS_FILES} ${SHIRLEY_ROOTFS_EXTRA_FILES}
+          ${CMAKE_SOURCE_DIR}/cmake/make-rootfs.cmake
   COMMENT "Packing rootfs/ into a SHRFS1 image")
 
 # 與架構、平台都無關的核心程式碼。
 # Kernel code that depends on neither the architecture nor the platform.
 set(SHIRLEY_KERNEL_SOURCES
   kernel/console/console.cpp
+  kernel/console/console_input.cpp
+  kernel/device/device.cpp
+  kernel/device/null.cpp
   boot/common/elf64.cpp
   kernel/elf/user_loader.cpp
-  kernel/elf/user_image.cpp
   kernel/user/launch.cpp
   kernel/syscall/syscall.cpp
   kernel/kernel_main.cpp
   kernel/format/number.cpp
   kernel/fs/shrfs.cpp
+  kernel/fs/shrfs_vfs.cpp
+  kernel/fs/devfs.cpp
+  kernel/fs/vfs.cpp
   kernel/fs/rootfs_mount.cpp
   kernel/interrupt/irq.cpp
-  kernel/io/console_input.cpp
   kernel/io/console_stream.cpp
   kernel/io/input_queue.cpp
   kernel/io/standard_streams.cpp
@@ -101,12 +134,17 @@ if(SHIRLEY_ARCH STREQUAL host)
   # tested on the development machine.
   add_library(shirley-kernel-core STATIC
     kernel/console/console.cpp
+    kernel/console/console_input.cpp
+    kernel/device/device.cpp
+    kernel/device/null.cpp
     kernel/elf/user_loader.cpp
     kernel/syscall/syscall.cpp
     kernel/format/number.cpp
     kernel/fs/shrfs.cpp
+    kernel/fs/shrfs_vfs.cpp
+    kernel/fs/devfs.cpp
+    kernel/fs/vfs.cpp
     kernel/fs/rootfs_mount.cpp
-    kernel/io/console_input.cpp
     kernel/io/input_queue.cpp
     kernel/io/standard_streams.cpp
     kernel/memory/page_allocator.cpp
@@ -125,7 +163,7 @@ if(SHIRLEY_ARCH STREQUAL host)
 
   enable_testing()
   foreach(test host_smoke core_services_smoke platform_model_smoke boot_loader_smoke input_smoke
-               file_system_smoke)
+               file_system_smoke device_smoke vfs_smoke)
     string(REPLACE "_" "-" test_name ${test})
     add_executable(shirley-${test_name} tests/${test}.cpp)
     target_link_libraries(shirley-${test_name} PRIVATE shirley-kernel-core)
@@ -195,7 +233,6 @@ else()
   set(SHIRLEY_USER_SYSCALL ${CMAKE_SOURCE_DIR}/libc/arch/arm64/syscall.S)
 endif()
 
-set(SHIRLEY_USER_DIR ${CMAKE_CURRENT_BINARY_DIR}/user-hello)
 set(SHIRLEY_USER_OBJECTS)
 foreach(source
     ${CMAKE_SOURCE_DIR}/user/hello/main.c
@@ -216,29 +253,21 @@ foreach(source
   list(APPEND SHIRLEY_USER_OBJECTS ${object})
 endforeach()
 
-set(SHIRLEY_USER_ELF ${SHIRLEY_USER_DIR}/hello.elf)
+# -z max-page-size=4096：aarch64 的連結器預設以 64 KiB 為最大頁面大小對齊
+# 節區，於是一個 2 KiB 的程式會被墊成 70 KiB 的檔案。核心的分頁一律是 4 KiB，
+# 那些填充毫無用處；而現在這個 ELF 要放進根檔案系統映像，多出來的每一個
+# 位元組都會跟著核心一起被載入。
+#
+# -z max-page-size=4096: the aarch64 linker aligns sections to a 64 KiB maximum
+# page size by default, which pads a 2 KiB program into a 70 KiB file. The
+# kernel pages at 4 KiB and that padding buys nothing — and now that this ELF
+# goes into the root file system image, every extra byte is loaded with the
+# kernel.
 add_custom_command(OUTPUT ${SHIRLEY_USER_ELF}
-  COMMAND ${SHIRLEY_LLD} -T ${SHIRLEY_USER_LINKER} --build-id=none
+  COMMAND ${SHIRLEY_LLD} -T ${SHIRLEY_USER_LINKER} --build-id=none -z max-page-size=4096
           -o ${SHIRLEY_USER_ELF} ${SHIRLEY_USER_OBJECTS}
   DEPENDS ${SHIRLEY_USER_OBJECTS} ${SHIRLEY_USER_LINKER})
 add_custom_target(shirley-user-hello ALL DEPENDS ${SHIRLEY_USER_ELF})
-
-if(SHIRLEY_ARCH STREQUAL x86_64)
-  set(SHIRLEY_USER_IMAGE_FORMAT elf64-x86-64)
-  set(SHIRLEY_USER_IMAGE_ARCH i386:x86-64)
-else()
-  set(SHIRLEY_USER_IMAGE_FORMAT elf64-littleaarch64)
-  set(SHIRLEY_USER_IMAGE_ARCH aarch64)
-endif()
-set(SHIRLEY_USER_IMAGE_OBJECT ${SHIRLEY_USER_DIR}/hello.elf.o)
-add_custom_command(OUTPUT ${SHIRLEY_USER_IMAGE_OBJECT}
-  COMMAND ${CMAKE_COMMAND} -E chdir ${CMAKE_CURRENT_BINARY_DIR} ${SHIRLEY_OBJCOPY}
-          --input-target=binary
-          --output-target=${SHIRLEY_USER_IMAGE_FORMAT}
-          --binary-architecture=${SHIRLEY_USER_IMAGE_ARCH}
-          user-hello/hello.elf user-hello/hello.elf.o
-  DEPENDS ${SHIRLEY_USER_ELF})
-add_custom_target(shirley-user-image DEPENDS ${SHIRLEY_USER_IMAGE_OBJECT})
 
 # 平台層原始碼；每個平台自行決定要使用哪些韌體格式與共用裝置驅動程式。
 # Platform layer sources; each platform picks the firmware formats and shared
@@ -249,6 +278,7 @@ if(SHIRLEY_PLATFORM STREQUAL qemu_x86_64)
     platform/qemu_x86_64/boot_protocol.cpp
     platform/qemu_x86_64/platform.cpp
     platform/pc/serial_console.cpp
+    platform/pc/serial_device.cpp
     platform/pc/serial_input.cpp
     platform/pc/pic.cpp
     platform/pc/pit.cpp
@@ -263,6 +293,7 @@ elseif(SHIRLEY_PLATFORM STREQUAL qemu_x86_64_uefi)
     platform/qemu_x86_64_uefi/boot_protocol.cpp
     platform/qemu_x86_64_uefi/platform.cpp
     platform/pc/serial_console.cpp
+    platform/pc/serial_device.cpp
     platform/pc/serial_input.cpp
     platform/pc/pic.cpp
     platform/pc/pit.cpp
@@ -345,13 +376,11 @@ target_compile_options(shirley-kernel-objects PRIVATE
 add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/shirley-kernel.elf
   COMMAND ${SHIRLEY_LLD} -T ${SHIRLEY_LINKER_SCRIPT} --build-id=none
           -o ${CMAKE_CURRENT_BINARY_DIR}/shirley-kernel.elf $<TARGET_OBJECTS:shirley-kernel-objects>
-          ${SHIRLEY_USER_IMAGE_OBJECT}
   # 目標名稱只建立順序相依；要讓物件檔更新後真的重新連結，
   # 必須把物件檔本身也列為相依。
   # The target name only creates an ordering dependency; the object files
   # themselves must be listed so an updated object actually relinks.
   DEPENDS shirley-kernel-objects $<TARGET_OBJECTS:shirley-kernel-objects>
-          ${SHIRLEY_USER_IMAGE_OBJECT}
           ${SHIRLEY_LINKER_SCRIPT}
   COMMAND_EXPAND_LISTS)
 add_custom_target(shirley-kernel ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/shirley-kernel.elf)

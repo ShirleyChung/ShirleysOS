@@ -1,6 +1,7 @@
 #pragma once
 
 #include "shirley/block_device.hpp"
+#include "shirley/vfs.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -92,5 +93,15 @@ io::Result read(const Node& file, std::uint64_t offset, void* buffer, std::size_
 // Assemble an entry's absolute path. Returns false when the buffer is too
 // small or the tree is nested deeper than max_depth.
 bool path_of(const Node& node, char* buffer, std::size_t capacity);
+
+// 把這個檔案系統包成 VFS 可以掛載的東西。目前 shirley::fs 一次只掛載一份
+// 映像，因此這個轉接器也是單一物件；要同時掛兩份 SHRFS 的話，得先讓
+// shirley::fs 從一組全域函式變成一個物件。
+//
+// This file system as something the VFS can mount. shirley::fs holds one
+// mounted image at a time today, so this adapter is a single object too;
+// mounting two SHRFS volumes at once would first mean turning shirley::fs from
+// a set of global functions into an object.
+vfs::FileSystem& shrfs_filesystem();
 
 } // namespace shirley::fs

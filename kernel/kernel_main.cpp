@@ -1,6 +1,7 @@
 #include "shirley/arch.hpp"
 #include "shirley/boot_info.hpp"
 #include "shirley/console.hpp"
+#include "shirley/device.hpp"
 #include "shirley/format.hpp"
 #include "shirley/fs.hpp"
 #include "shirley/io.hpp"
@@ -10,6 +11,7 @@
 #include "shirley/rootfs.hpp"
 #include "shirley/scheduler.hpp"
 #include "shirley/shell.hpp"
+#include "shirley/vfs.hpp"
 
 namespace {
 
@@ -45,8 +47,19 @@ extern "C" [[noreturn]] void kernel_main(const shirley::BootInfo* boot_info) {
     // Bring the architecture layer up first so exceptions are handled and
     // diagnostics can be printed.
     shirley::arch::initialize();
+    // 裝置註冊表要在第一個裝置註冊之前清空，而主控台初始化時就會把自己登記
+    // 進去，因此它排在主控台之前。
+    //
+    // The device registry has to be cleared before the first device registers,
+    // and console initialization publishes the console itself, so it comes
+    // first.
+    shirley::device::initialize();
     shirley::console::initialize();
     shirley::io::initialize_console_streams();
+    // /dev/null 不對應任何硬體，因此不必等平台初始化。
+    // /dev/null corresponds to no hardware and so does not wait for the
+    // platform to come up.
+    shirley::device::null_initialize();
     // 主控台可用後的第一件事，就是回報架構向量表已經安裝。
     // The first thing worth reporting once the console works is that the
     // architecture's vector table is installed.
@@ -93,12 +106,33 @@ extern "C" [[noreturn]] void kernel_main(const shirley::BootInfo* boot_info) {
     // The root file system is a read-only image embedded in the kernel and
     // mounted through a RAM disk, so boot needs no disk driver to have files
     // to read.
-    if (shirley::fs::mount_rootfs()) {
+    shirley::vfs::initialize();
+    if (shirley::fs::mount_rootfs() &&
+        shirley::vfs::mount("/", shirley::fs::shrfs_filesystem())) {
         write_count("Root file system: ", shirley::fs::entry_count(), " entries, ");
         write_count("", shirley::fs::total_file_bytes(), " bytes\n");
     } else {
         shirley::console::write("Root file system: mount failed\n");
     }
+    // devfs 把裝置註冊表掛成 /dev。它必須排在根檔案系統之後：掛載點得先存在，
+    // 而 /dev 這個目錄是根檔案系統提供的。
+    //
+    // devfs mounts the device registry at /dev. It has to come after the root
+    // file system, because a mount point has to exist first and the /dev
+    // directory is the root file system's.
+    if (!shirley::vfs::mount("/dev", shirley::vfs::devfs()))
+        shirley::console::write("/dev: mount failed\n");
+
+    // 最後才列出裝置：平台的驅動程式與根檔案系統的磁碟都已經登記完，因此
+    // 這份清單就是 /dev 底下實際會看到的內容。列出來的同時也是一次自我檢查
+    // ——少了 kbd0 就代表鍵盤沒有上線。
+    //
+    // The devices are listed last: the platform's drivers and the root file
+    // system's disk have all registered by now, so this list is exactly what
+    // appears under /dev. Printing it doubles as a self-check: a missing kbd0
+    // means the keyboard never came online.
+    write_count("Devices: ", shirley::device::count(), "\n");
+    shirley::device::dump();
     shirley::console::write("\n");
 
     // 開機到此結束，機器接下來就是這個提示符：shell 讀取中斷送進來的按鍵，

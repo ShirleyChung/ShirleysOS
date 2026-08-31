@@ -18,12 +18,15 @@ ConsoleStream console_stream;
 } // namespace
 
 void initialize_console_streams() {
-    // 主控台本身只能輸出，因此標準輸入先留空；有輸入裝置的平台會在自己的
-    // 驅動程式初始化時把佇列接上來（PC 平台是 PS/2 鍵盤）。
+    // 標準輸入先留空：這時還沒有任何輸入裝置，指向一個永遠讀不到東西的
+    // 串流只會讓 shell 以為機器可以打字。有輸入裝置的平台會在驅動程式初始化
+    // 成功時呼叫 console::attach_input()，標準輸入才在那一刻接上主控台。
     //
-    // The console itself is output-only, so standard input starts unset. A
-    // platform with an input device attaches its queue when that driver comes
-    // up — the PS/2 keyboard on a PC.
+    // Standard input starts unset: no input device exists yet, and pointing it
+    // at a stream that can never produce a character would only make the shell
+    // believe the machine can be typed at. A platform with an input device
+    // calls console::attach_input() when that driver comes up, and standard
+    // input is connected to the console at that moment.
     set_standard_input(nullptr);
     set_standard_output(&console_stream);
     set_standard_error(&console_stream);

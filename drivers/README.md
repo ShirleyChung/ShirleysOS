@@ -16,3 +16,11 @@ leaves only port access in the platform directory.
 
 Every driver reaches interrupts through `shirley::irq`, never through an
 interrupt controller directly.
+
+A driver that produces or consumes bytes publishes itself as a
+`shirley::device::Device` — see `kernel/device/README.md`. That is the whole of
+what it owes its users: a name, a kind, and an operation table. An input driver
+additionally hands its device to `shirley::console::attach_input()` once its
+hardware really raises interrupts, which is what makes its characters reach the
+shell. A driver never touches standard input, never echoes, and never knows the
+shell exists.

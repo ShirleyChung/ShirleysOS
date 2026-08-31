@@ -333,17 +333,30 @@ behind, and registers its handler through the IRQ layer.
 
 第一版支援掃描碼組 1 的小寫字母、數字、Enter、Backspace、Tab、空白與基本
 標點；放開事件與 Shift、Ctrl、Alt 一律忽略，擴充鍵的兩個位元組整組丟棄。
-解出的字元會推進 `io::console_input()` 這個共用佇列，驅動程式本身不做回顯：
-畫面上該出現什麼是行編輯器才知道的事。建置時定義 `SHIRLEY_DEBUG_SCANCODES`
-會印出每一個原始掃描碼。
+解出的字元會推進這個驅動程式自己的環狀緩衝區，也就是 `kbd0` 這個裝置的
+內容；驅動程式本身不做回顯，畫面上該出現什麼是行編輯器才知道的事。建置時
+定義 `SHIRLEY_DEBUG_SCANCODES` 會印出每一個原始掃描碼。
 
 The first version covers scancode set 1's lowercase letters, digits, Enter,
 Backspace, Tab, space, and basic punctuation; release events and Shift, Ctrl,
 and Alt are ignored, and both bytes of an extended key are dropped. A decoded
-character is pushed into the shared `io::console_input()` queue, and the driver
-does not echo: what should appear on screen is something only the line editor
-knows. Defining `SHIRLEY_DEBUG_SCANCODES` at build time prints every raw
-scancode.
+character is pushed into this driver's own ring buffer, which is what the
+`kbd0` device holds, and the driver does not echo: what should appear on screen
+is something only the line editor knows. Defining `SHIRLEY_DEBUG_SCANCODES` at
+build time prints every raw scancode.
+
+中斷處理常式只做四件事：從 0x60 讀掃描碼、解碼、把字元推進環狀緩衝區、返回。
+它不列印、不呼叫 shell，也不自己送 end-of-interrupt——那是 IRQ 層的職責。
+完整的資料流是：
+
+The handler does exactly four things: read the scancode from port 0x60, decode
+it, push the character into the ring buffer, and return. It does not print, it
+does not call the shell, and it does not signal end-of-interrupt itself — that
+belongs to the IRQ layer. The full path is:
+
+```text
+PS/2 keyboard → IRQ1 → handler → ring buffer → kbd0 → console → shell
+```
 
 `io::InputQueue` 只有一個生產者（中斷處理常式）與一個消費者（一般核心
 程式），生產者只寫 head、消費者只寫 tail，因此不需要鎖。佇列滿了會捨棄新的
@@ -356,18 +369,29 @@ character, because the producer must not touch the index the consumer owns.
 
 ### 主控台輸入 / Console input
 
-一台機器可能有好幾個輸入裝置，它們都應該能驅動同一個主控台。所有輸入驅動
-程式因此把解碼後的字元推進 `io::console_input()` 這一個共用佇列，並在自己
-初始化成功後呼叫 `io::attach_console_input()` 把它接成標準輸入。多個裝置共用
-一個佇列不違反單生產者的前提：中斷處理常式執行時中斷是關閉的，兩個處理常式
-不會同時跑。
+一台機器可能有好幾個輸入裝置，它們都應該能驅動同一個主控台。每個輸入驅動
+程式維護自己的 `io::InputQueue`，把它包成一個裝置，並在初始化成功後呼叫
+`console::attach_input()` 接上主控台。`console::read()` 依接上的順序輪詢每個
+裝置，回傳第一個真的有字元的結果；第一個裝置接上時，標準輸入也在那一刻指向
+主控台。
 
 A machine can have several input devices and all of them should be able to
-drive the same console. Every input driver therefore pushes its decoded
-characters into the one shared `io::console_input()` queue and calls
-`io::attach_console_input()` once it is up. Several devices sharing one queue
-does not break the single-producer premise: an interrupt handler runs with
-interrupts disabled, so two of them never run at the same time.
+drive the same console. Each input driver keeps its own `io::InputQueue`, wraps
+it as a device, and calls `console::attach_input()` once it is up.
+`console::read()` polls the devices in attachment order and returns the first
+result that actually carries a character; attaching the first device is also
+what points standard input at the console.
+
+每個裝置各持一個佇列，而不是全部共用一個，是因為 `kbd0` 必須能被單獨讀取：
+匯流是主控台的職責，不是驅動程式的。這也讓免鎖的前提更乾淨——每個佇列真的
+只有一個生產者（它自己的中斷處理常式）與一個消費者，不必再靠「中斷處理常式
+不會同時執行」來成立。
+
+Each device holds its own queue instead of all of them sharing one because
+`kbd0` has to be readable on its own: merging is the console's job, not a
+driver's. It also makes the lock-free premise cleaner — every queue really does
+have a single producer, its own interrupt handler, and a single consumer,
+without having to lean on the fact that two handlers never run at once.
 
 目前有三個輸入驅動程式。`platform/pc/ps2_keyboard.cpp` 是 IRQ1 上的 PS/2
 鍵盤；`platform/pc/serial_input.cpp` 是 IRQ4 上的 COM1 接收路徑，讓序列埠
@@ -376,12 +400,13 @@ interrupts disabled, so two of them never run at the same time.
 換成 Backspace，讓進入佇列的字元和鍵盤解出來的完全一樣。
 
 There are three input drivers today. `platform/pc/ps2_keyboard.cpp` is the PS/2
-keyboard on IRQ1; `platform/pc/serial_input.cpp` is COM1's receive path on
-IRQ4, so a terminal on the other end of the serial line can type too; and
-`platform/arm/pl011_input.cpp` is the PL011's receive interrupt, the only input
-device on QEMU virt. The serial drivers translate a terminal's carriage return
-into a newline and DEL into a backspace, so what enters the queue is identical
-to what the keyboard decodes.
+keyboard on IRQ1, published as `kbd0`; `platform/pc/serial_input.cpp` is COM1's
+receive path on IRQ4, the receiving half of `uart0`, so a terminal on the other
+end of the serial line can type too; and `platform/arm/pl011_input.cpp` is the
+PL011's receive interrupt, published as `uart0` and the only input device on
+QEMU virt. The serial drivers translate a terminal's carriage return into a
+newline and DEL into a backspace, so what enters the queue is identical to what
+the keyboard decodes.
 
 兩個序列驅動程式都必須把接收 FIFO 的觸發門檻降到最低。終端機一次只送一個
 字元，門檻設在 14 個位元組（COM1 輸出端的預設值）時，按鍵會留在 FIFO 裡等
@@ -501,6 +526,149 @@ Each of these becomes a new platform-layer backend behind the unchanged
   device tree, which belongs to M8. The ARM64 counterpart of MSI is GICv2m or
   the GICv3 ITS, not an IOAPIC; an IOAPIC is an x86-only device.
 
+## 裝置子系統 / Device subsystem
+
+硬體與使用硬體的人之間有五層，每一層只認得下面那一層：
+
+There are five layers between hardware and whoever uses it, and each knows only
+the one beneath it:
+
+```text
+Hardware
+   ↓
+Driver            平台或共用的驅動程式 / a platform or shared driver
+   ↓
+device::Device    名字、種類、操作表 / a name, a kind, an operation table
+   ↓
+Device registry   依名字查詢 / lookup by name
+   ↓
+Console           把輸出與若干輸入來源收成一條路 / one path in, one path out
+   ↓
+future VFS / devfs
+```
+
+`shirley::device` 是這一層的全部。一個裝置是一個名字、一個種類（`Character`、
+`Block`、`Input`、`Network`）、一張操作表（`open`、`close`、`read`、`write`、
+`control`）與一個 `driver_data` 指標。註冊表是一張最多 64 個項目的固定大小
+指標表，名字就是鍵值：`register_device()`、`unregister_device()`、`find()`。
+重複的名字、滿了的表、空名字與沒有操作表的裝置都會被拒絕，而且回傳的是拒絕
+的原因而不是一個布林值——名字撞了是程式錯誤，表滿了是設定問題，驅動程式對
+這兩件事該有不同的反應。
+
+`shirley::device` is the whole of this layer. A device is a name, a kind
+(`Character`, `Block`, `Input`, `Network`), an operation table (`open`,
+`close`, `read`, `write`, `control`), and a `driver_data` pointer. The registry
+is a fixed table of at most 64 pointers keyed by name: `register_device()`,
+`unregister_device()`, `find()`. A duplicate name, a full table, an empty name,
+and a device with no operation table are all refused, and what comes back is
+the reason rather than a boolean — a name collision is a programming error
+while a full table is a configuration one, and a driver should react
+differently to each.
+
+裝置物件屬於驅動程式，註冊表只保存指標，不配置也不釋放任何東西。核心還沒有
+動態配置器，而驅動程式的生命週期本來就和它的硬體一樣長。
+
+A device object belongs to its driver; the registry stores a pointer and
+neither allocates nor frees. The kernel has no dynamic allocator yet, and a
+driver lives exactly as long as its hardware does.
+
+這裡刻意不是 Linux 的 driver model：沒有 bus、沒有 class、沒有 major/minor
+編號。名字就是識別碼。等到真的需要熱插拔或裝置樹列舉時再談。
+
+This deliberately is not Linux's driver model: no buses, no classes, no
+major/minor numbers. The name is the identifier. That conversation is worth
+having when hot-plug or device-tree enumeration genuinely arrives.
+
+裝置與既有的 `io::ByteStream` 雙向互通。`device::stream_operations` 是一張以
+`ByteStream` 為後端的操作表，因此 `io::InputQueue` 這種本來就是串流的東西
+變成裝置時不必重寫讀寫邏輯——`kbd0` 正是這樣組成的。反方向的 `device::Stream`
+把裝置包成串流，未來的 VFS 節點會用它。
+
+Devices and the existing `io::ByteStream` convert in both directions.
+`device::stream_operations` is an operation table backed by a `ByteStream`, so
+something that is a stream already — an `io::InputQueue` — becomes a device
+with no read or write written twice; `kbd0` is built exactly that way. In the
+other direction `device::Stream` wraps a device as a stream, which is what a
+future VFS node will use.
+
+驅動程式的裝置物件都是靜態物件，而核心不執行 `.init_array`：需要執行期建構的
+靜態物件永遠不會被建構，只會維持 `.bss` 的全零狀態。因此 `Device` 的建構子是
+`constexpr`，而且每個裝置物件都標上 `constinit`，讓這種錯誤在編譯期就失敗，
+而不是在開機時變成一個帶著空名字被拒絕的裝置。同樣的理由，操作表要用物件
+（`device::stream_operations`）而不是回傳它的函式：初始式裡出現一次普通的
+函式呼叫，整個物件就會退回執行期初始化。
+
+A driver's device object is a static one, and the kernel does not run
+`.init_array`: a static needing run-time construction is never constructed at
+all and keeps the zeroes `.bss` gave it. `Device`'s constructor is therefore
+`constexpr` and every device object is marked `constinit`, so that mistake
+fails the build rather than becoming a device that reaches boot with an empty
+name and is refused. For the same reason an operation table is an object
+(`device::stream_operations`) and not a function returning one: a single
+ordinary function call in the initializer pushes the whole object back to
+run-time initialization.
+
+目前註冊的裝置是 `console`、`null`、`uart0`，以及 PC 上的 `kbd0`。開機時會把
+註冊表印出來，`devices` 這個 shell 指令也會列出同一份內容，並標出哪些裝置正在
+供應主控台輸入：
+
+The devices registered today are `console`, `null`, `uart0`, and, on a PC,
+`kbd0`. The registry is printed at boot, and the `devices` shell command lists
+the same thing while marking which devices are feeding console input:
+
+```text
+Devices: 4
+[device] console type=char
+[device] null type=char
+[device] uart0 type=char
+[device] kbd0 type=input
+```
+
+### 主控台層 / The console layer
+
+`shirley::console` 是上層與硬體之間唯一的介面。輸出走可替換的 `Backend`，
+輸入走已註冊的裝置；兩邊不對稱是因為問題不同：輸出只有一個目的地，輸入可能
+同時有好幾個來源。
+
+`shirley::console` is the only interface between everything above and the
+hardware. Output goes through a replaceable `Backend` and input through
+attached devices. The asymmetry is deliberate: output has one destination while
+input can have several sources at once.
+
+```text
+shell / readline / printf
+           ↓
+        console
+      ↙         ↘
+   kbd0        uart0 / framebuffer
+```
+
+`console::write()` 與 `console::read()` 是那條界線。主控台自己也是註冊表裡的
+一個裝置（`console`），讀寫都轉回主控台層，因此未來的 `/dev/console` 不需要
+再寫一次轉接。
+
+`console::write()` and `console::read()` are that boundary. The console is
+itself a device in the registry (`console`) whose reads and writes go back
+through the console layer, so a future `/dev/console` needs no further adapter.
+
+### /dev 與 devfs / /dev and devfs
+
+`/dev` 是一個命名空間，不是驅動程式。devfs 只是把註冊表的內容以檔案的形式
+呈現出來：一個 VFS 節點持有一個 `device::Device*`，讀寫直接轉給那張操作表，
+因此 `/dev/kbd0` 與 `device::find("kbd0")` 指的是同一個物件，兩者不可能不
+一致。devfs 沒有自己的儲存空間，也沒有自己的裝置狀態。裝置層完全不需要為了
+它改變，這也是裝置層先做的理由。
+
+`/dev` is a namespace, not a driver. devfs presents what the registry already
+holds as files: a VFS node holds a `device::Device*` and forwards reads and
+writes to that operation table, so `/dev/kbd0` and `device::find("kbd0")` are
+the same object and the two can never disagree. devfs has no storage and no
+device state of its own. The device layer needed no change at all for it, which
+is the reason it came first.
+
+詳見底下的〈虛擬檔案系統〉。
+See "The virtual file system" below.
+
 ## 目前的開發環境 / Current development environment
 
 ```text
@@ -525,6 +693,8 @@ Applications
 libc / POSIX Compatibility
 ShirleyOS Native ABI
 Generic Kernel
+VFS (shrfs, devfs)
+Console / Device Registry
 Architecture Abstraction
 Platform Abstraction
 Hardware
@@ -532,13 +702,26 @@ Hardware
 
 通用核心程式碼不得假設自己跑在 x86_64、ARM64、QEMU 或 Apple Silicon 上。
 架構差異屬於 `arch/`；機器與裝置差異屬於 `platform/`。POSIX 相容是介面目標，
-不是核心的內部架構。主控台的分界線是 `shirley::console::{initialize,write}`。
+不是核心的內部架構。主控台的分界線是
+`shirley::console::{initialize,write,read}`。
 
 Generic kernel code must not assume x86_64, ARM64, QEMU, or Apple Silicon.
 Architecture differences belong in `arch/`; machine and device differences
 belong in `platform/`. POSIX compatibility is an interface goal, not the
 internal kernel architecture. The console boundary is
-`shirley::console::{initialize,write}`.
+`shirley::console::{initialize,write,read}`.
+
+各層之間的邊界是單向的：`arch` ≠ `drivers` ≠ `device` ≠ `console` ≠ `fs`。
+鍵盤驅動程式可以用 x86 的 port I/O；裝置管理器不知道 0x60 是什麼；shell 不
+知道 IRQ1；主控台不知道 8259A；未來的 VFS 只需要認得裝置抽象。`keyboard IRQ
+→ shell` 或 `VFS → inb/outb` 這種耦合不允許出現。
+
+The boundaries between layers run one way: `arch` ≠ `drivers` ≠ `device` ≠
+`console` ≠ `fs`. A keyboard driver may use x86 port I/O; the device manager
+does not know what port 0x60 is; the shell does not know about IRQ1; the
+console does not know about the 8259A; and a future VFS needs to know nothing
+but the device abstraction. Couplings such as `keyboard IRQ → shell` or
+`VFS → inb/outb` are not allowed to appear.
 
 核心是 freestanding 的。`kernel/freestanding/` 提供核心實際用到的標準標頭檔
 最小子集，`kernel/runtime/` 則提供編譯器會隱含產生呼叫的常式（`memset`、
@@ -562,6 +745,83 @@ freestanding kernel has nothing to link against. The kernel runs on a single
 core today, so no other thread can race the first initialization and dropping
 the guard is safe; that assumption has to be revisited when a second core
 appears.
+
+## 虛擬檔案系統 / The virtual file system
+
+`shirley::vfs` 是路徑與描述子的那一層。上層只認得路徑，不知道另一端是核心裡
+的 SHRFS 映像、一個裝置，還是之後掛上來的別的東西：
+
+`shirley::vfs` is the layer of paths and descriptors. Everything above it knows
+paths and never whether the far end is the SHRFS image inside the kernel, a
+device, or something mounted later:
+
+```text
+shell / ELF loader
+       ↓
+      vfs           路徑解析、掛載表、開啟的檔案 / paths, mounts, open files
+    ↙     ↘
+shrfs     devfs
+  ↓         ↓
+BlockDevice  device::Device
+```
+
+介面就是 POSIX 的那幾個動詞：`open()` 回傳描述子，`read()`／`write()` 從目前
+位置讀寫並前進它，`seek()`、`close()`、`stat()`、`list()`。開啟失敗回傳負數，
+而且分得出原因——「沒有這個檔案」與「那是一個目錄」對 shell 來說是兩件事。
+
+The interface is the POSIX set of verbs: `open()` returns a descriptor,
+`read()` and `write()` work at the current position and advance it, plus
+`seek()`, `close()`, `stat()`, and `list()`. A failed open returns a negative
+value that says which failure it was — "no such file" and "that is a directory"
+are different things to a shell.
+
+路徑解析分成三步：先正規化成絕對路徑（`.`、`..`、重複的斜線都在這一步處理
+掉），再找出掛載點最長且涵蓋這個路徑的那個掛載，最後在那個檔案系統裡逐段
+走完剩下的部分。最長的才對：`/dev/kbd0` 同時位在 `/` 與 `/dev` 之下，而應該
+回答它的是 devfs。比對以路徑元件為單位，不是字串前綴——`/devices` 不在掛在
+`/dev` 的檔案系統底下。
+
+Resolution is three steps: normalize into an absolute path, resolving `.`,
+`..`, and repeated slashes; find the mount with the longest mount point
+covering that path; and walk the remainder inside that file system.
+Longest wins because `/dev/kbd0` lies under both `/` and `/dev` and devfs is
+the one that should answer. The match is by path component rather than string
+prefix: `/devices` is not inside a file system mounted at `/dev`.
+
+已解析的節點帶著自己正規化後的絕對路徑。這正是列出目錄時可以把掛載點併進來
+的原因：`ls /` 看得到 `dev`，即使根檔案系統裡沒有這個目錄——列完該目錄自己的
+項目之後，接著列出掛在它正下方的檔案系統。掛載點因此不需要在唯讀映像裡預留
+一個空目錄，那個目錄的唯一用途只是馬上被蓋掉。
+
+A resolved node carries its own normalized absolute path, and that is what lets
+a listing fold mount points in: `ls /` shows `dev` even though the root file
+system has no such directory, because the file systems mounted directly inside
+a directory follow that directory's own entries. A mount point therefore needs
+no empty placeholder in the read-only image, whose only purpose would be to be
+covered up immediately.
+
+區塊裝置可以用同一個描述子從兩個角度存取。`read()`／`write()` 以位元組定址，
+由 devfs 把檔案位置換算成區塊——整塊讀進來、取出要的那一段；只改到一部分的
+區塊會先讀回來再寫回去，否則同一塊裡其他的位元組會被清成零。
+`block_read()`／`block_write()` 則直接指定磁區、不理會檔案位置，那是檔案系統
+驅動程式會走的那條路。
+
+A block device is reachable two ways through one descriptor. `read()` and
+`write()` address bytes, and devfs translates the file position into blocks: a
+block is read whole and the wanted slice taken out of it, and a block only
+partly overwritten is read back first and then written whole, or the other
+bytes in it would be zeroed. `block_read()` and `block_write()` name sectors
+directly and ignore the position, which is the path a file system driver takes.
+
+掛載表最多 4 個掛載點，描述子表最多 16 個開啟的檔案，都是固定大小的表：核心
+沒有動態配置器，而目前的用量離上限還很遠。第一個掛載必須是 `/`，否則之後的
+路徑解析沒有起點；還有檔案開在上面的檔案系統不能卸載。
+
+The mount table holds at most four mounts and the descriptor table at most
+sixteen open files, both fixed: the kernel has no dynamic allocator and today's
+usage is nowhere near either. The first mount has to be `/`, or later
+resolution has nowhere to start, and a file system with open files cannot be
+unmounted.
 
 ## 檔案系統 / File system
 
@@ -602,8 +862,35 @@ that is linked into the kernel, and boot mounts it through an `io::RamDisk`, so
 there is a file system before any disk driver exists. The file system reaches
 its data only through `io::BlockDevice` and always reads through one
 block-sized buffer, so the same code carries over unchanged to a real disk
-driver. The host build links the same generated image, which is what makes
-`tests/file_system_smoke.cpp` a test of the image that actually boots.
+driver.
+
+那個 RAM disk 本身也以 `ram0` 的名字登記到裝置註冊表，因此 `/dev/ram0` 可以
+被開啟、被逐塊讀出來——`blk /dev/ram0 0` 印出來的就是掛載時檢查的那份 SHRFS1
+標頭。之後真正的磁碟驅動程式會以同樣的方式登記，`/dev/sda` 對使用端來說和
+`/dev/ram0` 沒有差別。
+
+That RAM disk is itself published in the device registry as `ram0`, so
+`/dev/ram0` can be opened and read a block at a time — what `blk /dev/ram0 0`
+prints is the very SHRFS1 header the mount checked. A real disk driver will
+register the same way, and `/dev/sda` will look no different from `/dev/ram0`
+to whoever uses it.
+
+核心目標還會把剛連結好的 user 程式一起打包成 `/bin/hello`。核心因此可以從
+自己的檔案系統讀出一個程式來執行，而不是從連結進核心映像的一段位元組：路徑
+由 VFS 解析，內容由檔案系統讀出，ELF loader 只認得那份映像。它是建置產物，
+所以不放在 `rootfs/` 裡；每個架構編出來的內容本來也不一樣。主機建置沒有
+交叉工具鏈，它的映像就是 `rootfs/` 本身，`tests/file_system_smoke.cpp` 測的
+是那些內容，`/bin/hello` 這條路由 QEMU 的開機測試涵蓋。
+
+A kernel target also packs the user program it just linked in as `/bin/hello`.
+That is what lets the kernel read a program out of its own file system and run
+it rather than out of bytes linked into the kernel image: the VFS resolves the
+path, the file system reads the content, and the ELF loader sees only that
+image. It is a build product, so it does not live in `rootfs/`, and each
+architecture builds a different one anyway. The host build has no cross
+toolchain and its image is `rootfs/` exactly;
+`tests/file_system_smoke.cpp` checks that content, and the `/bin/hello` path is
+covered by the QEMU boot tests.
 
 路徑由 `lookup()` 逐段走訪，`.` 與 `..` 在走訪過程中處理，不先改寫字串；以
 `/` 開頭的路徑從根目錄開始，其他路徑從呼叫端給的 base 項目開始，shell 的
@@ -881,14 +1168,13 @@ execute in userspace.
 開機的終點是一個可用的主控台。核心掛上唯讀的 SHRFS1 根檔案系統，然後進入
 核心內的 shell：`ls`、`cat`、`cd` 走的是真正掛載起來的檔案系統，每個字元都
 由中斷送達，沒有輸入時 CPU 停在等待中斷的狀態。x86_64 有 PS/2 鍵盤與序列埠
-兩個輸入裝置，ARM64 有 PL011 的接收路徑，字元都進入同一個共用佇列。
+兩個輸入裝置，ARM64 有 PL011 的接收路徑。
 
 Boot ends at a usable console. The kernel mounts the read-only SHRFS1 root file
 system and enters an in-kernel shell: `ls`, `cat`, and `cd` walk a file system
 that is really mounted, every character arrives through an interrupt, and with
 nothing to read the CPU waits for one. x86_64 has two input devices, the PS/2
-keyboard and the serial port; ARM64 has the PL011's receive path; and all of
-them feed the same shared queue.
+keyboard and the serial port; ARM64 has the PL011's receive path.
 
 尚未完成的是寫入、每個指令一個行程（因此 `hello` 之後回不到提示符），以及
 真正的磁碟驅動程式——根檔案系統目前住在核心映像裡。
@@ -897,20 +1183,78 @@ Still missing: write support, a process per command (which is why the prompt
 does not come back after `hello`), and a real disk driver — the root file
 system lives inside the kernel image for now.
 
+### M1.6 — 裝置子系統 / device subsystem
+
+驅動程式與使用者之間有了統一的抽象。每個輸入驅動程式維護自己的環狀緩衝區，
+把它包成一個具名裝置（`kbd0`、`uart0`），登記到 `shirley::device` 的註冊表，
+再接上主控台；主控台把若干輸入來源收成一條輸入，同時自己也是 `console` 這個
+裝置。`null` 是第一個不對應任何硬體的裝置。`device_find("kbd0")` 就能拿到
+鍵盤並直接讀取。
+
+A single abstraction now sits between a driver and its users. Each input driver
+keeps its own ring buffer, wraps it as a named device (`kbd0`, `uart0`),
+publishes it in `shirley::device`'s registry, and attaches it to the console;
+the console merges the input sources into one input and is itself the `console`
+device. `null` is the first device backed by no hardware at all. A
+`device_find("kbd0")` is all it takes to read the keyboard directly.
+
+major/minor 編號、bus 與 class、熱插拔與電源管理都刻意還沒有做。
+
+Major/minor numbers, buses and classes, hot-plug, and power management are all
+deliberately absent.
+
+### M1.7 — VFS 與 devfs / the VFS and devfs
+
+路徑成為核心裡唯一的名字。`shirley::vfs` 提供 `open`／`read`／`write`／
+`seek`／`close`，根檔案系統掛在 `/`，devfs 掛在 `/dev`，兩者在同一個名字空間
+底下；`cat /etc/motd` 與 `cat /dev/kbd0` 走的是同一條路，shell 不知道它們分屬
+兩個檔案系統。區塊裝置多一條 `block_read`／`block_write`，直接指定磁區——
+根檔案系統所在的 RAM disk 因此也是 `/dev/ram0`。
+
+Paths become the one kind of name inside the kernel. `shirley::vfs` supplies
+`open`, `read`, `write`, `seek`, and `close`; the root file system is mounted
+at `/` and devfs at `/dev`, both in one namespace. `cat /etc/motd` and
+`cat /dev/kbd0` take the same path and the shell does not know they belong to
+two different file systems. A block device adds `block_read` and `block_write`,
+which name sectors directly — which is how the RAM disk the root file system
+lives on is also `/dev/ram0`.
+
+user 程式也成為一個檔案。建置把編出來的 `hello` 打包成 `/bin/hello`，
+`exec /bin/hello` 於是是一條完整的路：VFS 解析路徑、檔案系統讀出內容、
+ELF loader 走 program header 並映射頁面。核心不再連結任何一份 user 映像。
+
+A user program becomes a file too. The build packs the `hello` it links as
+`/bin/hello`, so `exec /bin/hello` is a complete path: the VFS resolves it, the
+file system reads it, and the ELF loader walks its program headers and maps its
+pages. No user image is linked into the kernel any more.
+
+尚未完成的是寫入路徑：SHRFS1 是唯讀格式，因此 `open()` 要求寫入時會直接被
+拒絕，能寫的只有裝置。載入器一次把整份映像讀進一塊 64 KiB 的緩衝區，比那大
+的程式會被明確拒絕；真正的解法是 demand paging，而不是把數字改大。目前也還
+沒有 `mkdir`、`unlink`、權限、時間戳記或每個行程自己的工作目錄。
+
+Still missing: the write path. SHRFS1 is a read-only format, so an `open()`
+asking to write is refused outright and only devices can be written. The loader
+reads a whole image into one 64 KiB buffer and refuses anything larger; the
+real answer to that is demand paging rather than a bigger number. There is no
+`mkdir`, `unlink`, permissions, timestamps, or per-process working directory
+yet either.
+
 ### 後續規劃 / Roadmap
 
 M2 搶佔式排程與執行緒（兩種架構的中斷與計時器都已在 M0.5 完成）；M3 行程與
-IPC，讓指令能以 user 行程執行並回到提示符；M4 完整 VFS：可寫入的檔案系統、
-多個掛載點，以及跑在 user 空間的 shell；M5 PCI/VirtIO、儲存與 MSI/MSI-X；
-M6 網路；M7 實體 x86_64 PC 啟用與 APIC/IOAPIC；M8 Apple Silicon 啟用；
-M9 GUI 與視窗系統。
+IPC，讓指令能以 user 行程執行並回到提示符；M4 可寫入的檔案系統與 user 空間
+的 shell，以及把 VFS 接到 syscall 上，讓 user 程式自己也能 open／read／write；
+M5 PCI/VirtIO、儲存與 MSI/MSI-X；M6 網路；M7 實體 x86_64 PC 啟用與
+APIC/IOAPIC；M8 Apple Silicon 啟用；M9 GUI 與視窗系統。
 
 M2 preemptive scheduling and threads (interrupts and a timer landed on both
 architectures in M0.5); M3 processes and IPC, so a command can run as a user
-process and return to the prompt; M4 a full VFS: writable file systems, several
-mount points, and a shell that runs in user space; M5 PCI/VirtIO, storage, and
-MSI/MSI-X; M6 networking; M7 physical x86_64 PC bring-up and APIC/IOAPIC;
-M8 Apple Silicon bring-up; M9 GUI/window system.
+process and return to the prompt; M4 a writable file system, a shell in user
+space, and the VFS behind the syscall layer so a user program can open, read,
+and write for itself; M5 PCI/VirtIO, storage, and MSI/MSI-X;
+M6 networking; M7 physical x86_64 PC bring-up and APIC/IOAPIC; M8 Apple Silicon
+bring-up; M9 GUI/window system.
 
 ## 程式撰寫理念 / Coding philosophy
 

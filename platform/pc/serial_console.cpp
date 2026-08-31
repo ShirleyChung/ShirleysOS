@@ -60,20 +60,32 @@ void initialize() override {
     outb(modem_control, 0x03);
 }
 
-// 將字元送到 COM1；換行時先送回車符。
-// Send characters to COM1, prefixing a carriage return before each newline.
-void write(const char* text, std::size_t length) override {
+// 將字元送到 COM1。
+// Send characters to COM1.
+void write(const char* text, std::size_t length) override { serial_write(text, length); }
+};
+
+SerialConsole serial_console;
+
+} // namespace shirley::platform::pc
+
+namespace shirley::platform::pc {
+
+// 主控台後端與 uart0 裝置的共同傳送路徑：換行時先送回車符，終端機才會回到
+// 行首。兩者共用同一個函式，是為了讓 /dev/uart0 寫出來的東西和主控台印出來
+// 的東西在線路上完全一樣。
+//
+// The transmit path shared by the console backend and the uart0 device: a
+// newline is prefixed with a carriage return so a terminal returns to the
+// start of the line. Both go through one function so what /dev/uart0 writes
+// and what the console prints are identical on the wire.
+void serial_write(const char* text, std::size_t length) {
+    if (text == nullptr) return;
     for (std::size_t i = 0; i < length; ++i) {
         if (text[i] == '\n') put('\r');
         put(text[i]);
     }
 }
-
-// 計算 null 結尾字串長度後輸出。
-// Measure a null-terminated string, then write it.
-};
-
-SerialConsole serial_console;
 
 } // namespace shirley::platform::pc
 

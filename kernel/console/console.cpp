@@ -1,5 +1,7 @@
 #include "shirley/console.hpp"
 
+#include "shirley/device.hpp"
+
 #ifdef SHIRLEY_HOST
 #include <cstdio>
 #endif
@@ -33,6 +35,15 @@ Backend* backend() { return active_backend != nullptr ? active_backend : default
 void initialize() {
     Backend* selected = backend();
     if (selected != nullptr) selected->initialize();
+    // 後端可以輸出之後，主控台自己也成為註冊表裡的一個裝置。輸入裝置這時
+    // 通常還不存在——驅動程式要等平台初始化才會上線——但主控台的輸出從這一
+    // 刻起就是可用的，而 /dev/console 指的正是這條路徑。
+    //
+    // Once the backend can print, the console itself becomes a device in the
+    // registry. Input devices usually do not exist yet, since their drivers
+    // come up during platform initialization, but console output works from
+    // this moment on, and that path is exactly what /dev/console names.
+    device::register_device(console_device());
 }
 
 void write(const char* text) {

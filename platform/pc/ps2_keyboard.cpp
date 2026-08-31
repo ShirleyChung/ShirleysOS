@@ -2,6 +2,7 @@
 
 #include "shirley/arch/x86_64/port_io.hpp"
 #include "shirley/console.hpp"
+#include "shirley/device.hpp"
 #include "shirley/format.hpp"
 #include "shirley/input/scancode.hpp"
 #include "shirley/input_queue.hpp"
@@ -51,6 +52,36 @@ constexpr unsigned wait_attempts = 100000;
 
 input::ScancodeDecoder decoder;
 std::uint64_t characters = 0;
+
+// 這個鍵盤自己的環狀緩衝區，也就是 kbd0 的內容。中斷處理常式是唯一的生產者，
+// 讀走字元的核心程式是唯一的消費者，因此 InputQueue 的免鎖前提成立，中斷
+// 處理常式不需要取任何鎖，也不會因為有人正在讀而被擋住。
+//
+// This keyboard's own ring buffer, which is what kbd0 holds. The interrupt
+// handler is the only producer and whoever reads characters out is the only
+// consumer, so InputQueue's lock-free premise holds: the handler takes no lock
+// and is never blocked by a reader in progress.
+io::InputQueue queue;
+
+// kbd0：一個輸入裝置，讀取就是從上面那個佇列取字元。操作表直接用 device 層
+// 為 ByteStream 準備好的那一張，因為 InputQueue 本來就是位元組串流，沒有
+// 必要為它再寫一次讀取函式。
+//
+// constinit 不是裝飾：核心不執行 .init_array，因此需要執行期初始化的靜態物件
+// 永遠不會被建構。有了它，這種錯誤會變成編譯失敗，而不是開機時一個帶著空名字
+// 被拒絕的裝置。
+//
+// kbd0: an input device whose read takes characters from that queue. The
+// operation table is the one the device layer already provides for byte
+// streams, because an InputQueue is one, and writing its read a second time
+// would serve nothing.
+//
+// constinit is not decoration: the kernel does not run .init_array, so a static
+// object needing run-time construction is never constructed at all. With it,
+// that mistake becomes a compile error instead of a device that reaches boot
+// with an empty name and is refused.
+constinit device::Device keyboard_device{"kbd0", device::Type::Input, device::stream_operations,
+                                         &queue};
 
 bool wait_writable() {
     for (unsigned attempt = 0; attempt < wait_attempts; ++attempt) {
@@ -154,13 +185,18 @@ void keyboard_interrupt(unsigned, void*) {
         const char decoded = decoder.feed(code);
         if (decoded == '\0') continue;
         ++characters;
-        // 回顯交給行編輯器：驅動程式只負責把字元交出去，畫面上要出現什麼
-        // 是使用這些字元的人才知道的事。
+        // 中斷處理常式到這裡就結束了：把字元放進緩衝區，其他什麼都不做。
+        // 回顯交給行編輯器，因為畫面上要出現什麼只有正在收集這一行的人知道；
+        // 佇列滿了就丟掉這個字元而不是覆蓋舊的，也不是在這裡等人來讀——
+        // 中斷情境不可以阻塞。
         //
-        // Echo belongs to the line editor. The driver's job ends at handing
-        // the character over; what should appear on screen is known only to
-        // whoever is consuming it.
-        io::console_input_push(decoded);
+        // The handler's work ends here: put the character in the buffer and do
+        // nothing else. Echo belongs to the line editor, because only whoever
+        // is collecting the line knows what should appear on screen. A full
+        // queue drops this character rather than overwriting an older one, and
+        // certainly rather than waiting for a reader — interrupt context must
+        // never block.
+        (void)queue.push(decoded);
     }
 }
 
@@ -169,6 +205,7 @@ void keyboard_interrupt(unsigned, void*) {
 bool ps2_keyboard_initialize() {
     decoder.reset();
     characters = 0;
+    queue.clear();
 
     if (!enable_first_port_interrupt()) {
         console::write("[IRQ] PS/2 controller did not respond; keyboard disabled\n");
@@ -187,15 +224,32 @@ bool ps2_keyboard_initialize() {
         console::write("[IRQ] keyboard IRQ1 registration failed\n");
         return false;
     }
-    // 有了輸入裝置之後標準輸入才有東西可接。
-    // Standard input has something to point at only once an input device
-    // exists.
-    io::attach_console_input();
+    // 硬體真的會送中斷之後才公開 kbd0。順序反過來的話，註冊表裡會出現一個
+    // 讀得到卻永遠沒有內容的裝置。
+    //
+    // kbd0 is published only once the hardware really raises interrupts.
+    // The other order would put a device in the registry that can be read but
+    // can never have anything in it.
+    if (device::register_device(keyboard_device) != device::Status::Ok) {
+        console::write("[device] kbd0 registration failed\n");
+        irq::release(ps2_keyboard_irq);
+        return false;
+    }
+    // 接上主控台之後，這些按鍵才會出現在 shell 的輸入裡；標準輸入也在這一刻
+    // 被指向主控台。驅動程式知道的就到這裡為止：它不知道 shell，也不知道
+    // 標準輸入是什麼。
+    //
+    // Attaching to the console is what makes these keystrokes reach the
+    // shell's input, and standard input is pointed at the console at the same
+    // moment. This is as far as the driver's knowledge goes: it knows nothing
+    // of the shell, nor of standard input.
+    console::attach_input(keyboard_device);
     console::write("[IRQ] keyboard IRQ enabled\n");
     return true;
 }
 
-std::uint64_t ps2_keyboard_pending() { return io::console_input().available(); }
+device::Device* ps2_keyboard_device() { return &keyboard_device; }
+std::uint64_t ps2_keyboard_pending() { return queue.available(); }
 std::uint64_t ps2_keyboard_characters() { return characters; }
 
 } // namespace shirley::platform::pc

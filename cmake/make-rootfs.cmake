@@ -3,15 +3,26 @@
 # 映像本身就是核心映像的一段，開機後掛上 RAM disk 就能讀。
 #
 # 用法（script 模式）：
-#   cmake -DROOTFS=<來源目錄> -DOUTPUT=<產生的 .cpp> -P cmake/make-rootfs.cmake
+#   cmake -DROOTFS=<來源目錄> -DOUTPUT=<產生的 .cpp> [-DEXTRA=<路徑=檔案;...>]
+#         -P cmake/make-rootfs.cmake
+#
+# EXTRA 用來放入建置產物：它們不在 rootfs/ 裡，因為它們是編出來的，而且每個
+# 目標編出來的內容都不一樣。user 程式就是這樣進到 /bin/hello 的——核心因此可以
+# 從自己的檔案系統讀出一個程式來執行，而不是從連結進來的一段位元組。
 #
 # Pack rootfs/ into a read-only SHRFS1 image and emit it as a C++ byte array
 # the kernel can link directly. That means the file system needs no external
 # tool and no second disk device: the image is simply part of the kernel image
 # and becomes readable as soon as it is mounted through a RAM disk at boot.
 #
+# EXTRA carries build products: they are not in rootfs/ because they are built,
+# and because each target builds something different. The user program reaches
+# /bin/hello this way, which is what lets the kernel read a program out of its
+# own file system rather than out of bytes linked into itself.
+#
 # Usage (script mode):
-#   cmake -DROOTFS=<source directory> -DOUTPUT=<generated .cpp> -P cmake/make-rootfs.cmake
+#   cmake -DROOTFS=<source directory> -DOUTPUT=<generated .cpp>
+#         [-DEXTRA=<path=file;...>] -P cmake/make-rootfs.cmake
 
 if(NOT ROOTFS OR NOT OUTPUT)
   message(FATAL_ERROR "Usage: cmake -DROOTFS=<dir> -DOUTPUT=<file.cpp> -P make-rootfs.cmake")
@@ -103,6 +114,43 @@ endfunction()
 file(GLOB_RECURSE found_files RELATIVE "${ROOTFS}" "${ROOTFS}/*")
 list(SORT found_files)
 
+# 要打包的檔案：先是 rootfs/ 裡的內容，再是 EXTRA 帶進來的建置產物。兩者從
+# 這裡開始沒有分別——映像裡看不出一個檔案是誰放進去的。
+#
+# The files to pack: what is in rootfs/ first, then the build products EXTRA
+# brings in. From here on the two are indistinguishable, as they are in the
+# image itself.
+set(pack_paths "")
+set(pack_sources "")
+foreach(file ${found_files})
+  if(IS_DIRECTORY "${ROOTFS}/${file}")
+    continue()
+  endif()
+  list(APPEND pack_paths "${file}")
+  list(APPEND pack_sources "${ROOTFS}/${file}")
+endforeach()
+
+foreach(entry ${EXTRA})
+  if(NOT "${entry}" MATCHES "^([^=]+)=(.+)$")
+    message(FATAL_ERROR "EXTRA entry is not <path>=<file>: ${entry}")
+  endif()
+  set(extra_path "${CMAKE_MATCH_1}")
+  set(extra_source "${CMAKE_MATCH_2}")
+  if(NOT EXISTS "${extra_source}")
+    message(FATAL_ERROR "EXTRA source does not exist: ${extra_source}")
+  endif()
+  # 撞名是建置錯誤。悄悄讓其中一個贏，只會讓映像裡的 /bin/hello 有時候是這個
+  # 檔案、有時候是另一個。
+  # A collision is a build error. Letting one of them quietly win would mean
+  # /bin/hello in the image is sometimes one file and sometimes the other.
+  list(FIND pack_paths "${extra_path}" existing)
+  if(NOT existing EQUAL -1)
+    message(FATAL_ERROR "EXTRA path is already in ${ROOTFS}: ${extra_path}")
+  endif()
+  list(APPEND pack_paths "${extra_path}")
+  list(APPEND pack_sources "${extra_source}")
+endforeach()
+
 set(paths ".")
 set(names "/")
 set(kinds 1)
@@ -127,10 +175,14 @@ endfunction()
 # 目錄必須先於自己的子項目登記，否則父項目索引會指向還不存在的位置。
 # A directory has to be registered before anything inside it, or the parent
 # index would point at an entry that does not exist yet.
-foreach(file ${found_files})
-  if(IS_DIRECTORY "${ROOTFS}/${file}")
-    continue()
-  endif()
+list(LENGTH pack_paths pack_total)
+if(pack_total EQUAL 0)
+  message(FATAL_ERROR "No files to pack from ${ROOTFS}")
+endif()
+math(EXPR last_pack "${pack_total} - 1")
+foreach(pack_index RANGE 0 ${last_pack})
+  list(GET pack_paths ${pack_index} file)
+  list(GET pack_sources ${pack_index} pack_source)
   string(REPLACE "/" ";" components "${file}")
   list(LENGTH components component_count)
   math(EXPR directory_count "${component_count} - 1")
@@ -160,13 +212,13 @@ foreach(file ${found_files})
   list(GET components ${directory_count} leaf)
   shirley_parent_of("${file}" parent_path)
   list(FIND paths "${parent_path}" parent_index)
-  file(SIZE "${ROOTFS}/${file}" file_size)
+  file(SIZE "${pack_source}" file_size)
   list(APPEND paths "${file}")
   list(APPEND names "${leaf}")
   list(APPEND kinds 0)
   list(APPEND parents ${parent_index})
   list(APPEND sizes ${file_size})
-  list(APPEND sources "${ROOTFS}/${file}")
+  list(APPEND sources "${pack_source}")
 endforeach()
 
 list(LENGTH paths entry_count)

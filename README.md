@@ -28,7 +28,7 @@ Milestone M0.5 brings up both architectures for real: x86_64 installs its own GD
 
 x86_64 也擁有完整可用的中斷子系統：256 個入口的 IDT、作為啟動中斷控制器後端的 8259A、供裝置驅動程式使用的通用 `shirley::irq` 層、IRQ0 上的 100 Hz PIT，以及 IRQ1 上的中斷驅動 PS/2 鍵盤與 IRQ4 上的序列埠接收路徑；兩者解出的字元都排入同一個共用佇列成為標準輸入，回顯則交給 shell 的行編輯器。核心在空閒時使用 `hlt`，不進行輪詢。
 
-x86_64 also has a working interrupt subsystem end to end: a 256-entry IDT, the 8259A as its bring-up interrupt controller backend, a generic `shirley::irq` layer that device drivers use instead of touching a controller, a 100 Hz PIT on IRQ0, an interrupt-driven PS/2 keyboard on IRQ1, and the serial receive path on IRQ4. Both queue their decoded characters into the one shared queue standard input reads, and echo is left to the shell's line editor. The kernel idles in `hlt` and polls nothing.
+x86_64 also has a working interrupt subsystem end to end: a 256-entry IDT, the 8259A as its bring-up interrupt controller backend, a generic `shirley::irq` layer that device drivers use instead of touching a controller, a 100 Hz PIT on IRQ0, an interrupt-driven PS/2 keyboard on IRQ1, and the serial receive path on IRQ4. Each pushes its decoded characters into its own ring buffer, which the console reads through that device, and echo is left to the shell's line editor. The kernel idles in `hlt` and polls nothing.
 
 ARM64 也在同一個 `shirley::irq` 介面下實作相同的中斷子系統。它的控制器採用多工分派，而不是為每個 IRQ 分配獨立向量：每個裝置中斷都會進入同一個 IRQ 例外入口，控制器驅動程式再辨識來源並進行派送。`platform/arm/` 儲存的是 ARM 定義的內容，而不是任何單一機器的實作；其中包含 GICv2 驅動與 PPI 30 上的架構定時器，與 `platform/pc/` 相對應。`qemu_arm64` 和 `qemu_arm64_uefi` 也都會透過它運作 100 Hz 計時器。
 
@@ -38,13 +38,21 @@ Apple Silicon 改為使用 `platform/apple_silicon/` 中自己的 AIC，現在�
 
 Apple Silicon uses its own AIC in `platform/apple_silicon/` instead, which is now a complete path rather than just register access. It has still never been executed: QEMU has no Apple Silicon machine model, so that target is built and reviewed but not booted, and its register layout comes from Asahi Linux's published documentation rather than a datasheet.
 
-開機的終點現在是一個可用的主控台。核心會掛上根檔案系統，然後進入 shell：輸入的每個字元都由中斷送達，`ls`、`cat`、`cd` 讀的是真正掛載起來的檔案系統，沒有輸入時 CPU 停在等待中斷的低功耗狀態，不做任何輪詢。x86_64 有兩個輸入裝置（IRQ1 的 PS/2 鍵盤與 IRQ4 的序列埠），ARM64 則靠 PL011 的接收中斷；兩者的字元都進入同一個共用佇列，shell 不需要知道字元來自哪裡。
+開機的終點現在是一個可用的主控台。核心會掛上根檔案系統，然後進入 shell：輸入的每個字元都由中斷送達，`ls`、`cat`、`cd` 讀的是真正掛載起來的檔案系統，沒有輸入時 CPU 停在等待中斷的低功耗狀態，不做任何輪詢。x86_64 有兩個輸入裝置（IRQ1 的 PS/2 鍵盤與 IRQ4 的序列埠），ARM64 則靠 PL011 的接收中斷；兩者都接在主控台上，shell 不需要知道字元來自哪裡。
 
-Boot now ends at a usable console. The kernel mounts the root file system and enters a shell: every character it reads arrived through an interrupt, `ls`, `cat`, and `cd` walk a file system that is really mounted, and with nothing to read the CPU parks in a low-power wait rather than polling anything. x86_64 has two input devices — the PS/2 keyboard on IRQ1 and the serial port on IRQ4 — while ARM64 uses the PL011's receive interrupt; both feed one shared queue, so the shell never learns where a character came from.
+Boot now ends at a usable console. The kernel mounts the root file system and enters a shell: every character it reads arrived through an interrupt, `ls`, `cat`, and `cd` walk a file system that is really mounted, and with nothing to read the CPU parks in a low-power wait rather than polling anything. x86_64 has two input devices — the PS/2 keyboard on IRQ1 and the serial port on IRQ4 — while ARM64 uses the PL011's receive interrupt; both attach to the console, so the shell never learns where a character came from.
 
-根檔案系統是一份唯讀的 SHRFS1 映像：`rootfs/` 在建置時被打包成位元組陣列連進核心，開機時透過 RAM disk 掛載，因此在還沒有磁碟驅動程式之前就有檔案可讀。檔案系統本身只透過 `io::BlockDevice` 存取資料，換成真正的磁碟時同一份程式碼可以直接沿用。
+驅動程式與使用者之間有一層統一的裝置抽象：`Hardware → Driver → device_t → 註冊表 → console → VFS`。每個驅動程式維護自己的環狀緩衝區，把它包成一個具名裝置登記到 `shirley::device`，中斷處理常式只負責把位元組放進緩衝區。`device::find("kbd0")` 就能直接讀鍵盤，`devices` 這個 shell 指令會列出註冊表。目前有 `console`、`null`、`uart0`、`ram0` 與 PC 上的 `kbd0`。
 
-The root file system is a read-only SHRFS1 image: `rootfs/` is packed into a byte array at build time, linked into the kernel, and mounted through a RAM disk at boot, so there are files to read before any disk driver exists. The file system reaches its data only through `io::BlockDevice`, so the same code carries over unchanged to a real disk.
+A single device abstraction sits between drivers and their users: `Hardware → Driver → device_t → registry → console → VFS`. Each driver keeps its own ring buffer, publishes it as a named device in `shirley::device`, and its interrupt handler does nothing but put bytes into that buffer. `device::find("kbd0")` reads the keyboard directly, and the `devices` shell command lists the registry. Today it holds `console`, `null`, `uart0`, `ram0`, and `kbd0` on a PC.
+
+路徑現在是核心裡唯一的名字。`shirley::vfs` 提供 `open`／`read`／`write`／`seek`／`close`，根檔案系統掛在 `/`，devfs 掛在 `/dev`，兩者在同一個名字空間底下——`cat /etc/motd` 與 `cat /dev/kbd0` 走的是同一條路。`/dev` 是註冊表之上的一層命名空間，不是另一套驅動程式：一個 VFS 節點就只是持有一個 `device::Device*`。區塊裝置多一條 `block_read`／`block_write` 直接指定磁區，因此 `blk /dev/ram0 0` 印出來的就是根檔案系統掛載時檢查的那份 SHRFS1 標頭。
+
+A path is now the one kind of name inside the kernel. `shirley::vfs` supplies `open`, `read`, `write`, `seek`, and `close`; the root file system is mounted at `/` and devfs at `/dev`, both in one namespace — `cat /etc/motd` and `cat /dev/kbd0` take the same path. `/dev` is a namespace over the registry rather than a second set of drivers: a VFS node holds nothing but a `device::Device*`. A block device adds `block_read` and `block_write` that name sectors directly, which is why `blk /dev/ram0 0` prints the very SHRFS1 header the root file system checked when it mounted.
+
+根檔案系統是一份唯讀的 SHRFS1 映像：`rootfs/` 在建置時被打包成位元組陣列連進核心，開機時透過 RAM disk 掛載，因此在還沒有磁碟驅動程式之前就有檔案可讀。檔案系統本身只透過 `io::BlockDevice` 存取資料，換成真正的磁碟時同一份程式碼可以直接沿用。編出來的 user 程式也一起被打包成 `/bin/hello`，因此 `exec /bin/hello` 是完整的一條路：VFS 解析路徑、檔案系統讀出內容、ELF loader 映射頁面並執行它。核心不再連結任何一份 user 映像。
+
+The root file system is a read-only SHRFS1 image: `rootfs/` is packed into a byte array at build time, linked into the kernel, and mounted through a RAM disk at boot, so there are files to read before any disk driver exists. The file system reaches its data only through `io::BlockDevice`, so the same code carries over unchanged to a real disk. The user program the build links is packed in as `/bin/hello`, which makes `exec /bin/hello` a complete path: the VFS resolves it, the file system reads it, and the ELF loader maps its pages and runs it. No user image is linked into the kernel any more.
 
 如需了解架構的真實來源與未來路線圖，請參閱 [OS_SPEC.md](OS_SPEC.md)。See [OS_SPEC.md](OS_SPEC.md) for the architectural source of truth and roadmap.
 
@@ -63,10 +71,16 @@ Platform: QEMU x86_64
 Machine: QEMU PC with SeaBIOS firmware
 Memory regions: 8
 Usable memory: 511 MiB
-Free pages: 130867
+Free pages: 130844
 Interrupts: enabled
 Timer: 100 Hz
-Root file system: 11 entries, 3311 bytes
+Root file system: 13 entries, 13316 bytes
+Devices: 5
+[device] console type=char
+[device] null type=char
+[device] uart0 type=char
+[device] kbd0 type=input
+[device] ram0 type=block
 
 Welcome to ShirleyOS.
 
@@ -84,10 +98,18 @@ shirley:/$ ls
    <dir>  docs/
    <dir>  etc/
    <dir>  home/
-4 entries
+   <dir>  bin/
+   <dir>  dev/
+6 entries
 shirley:/$ cat /etc/version
 ShirleyOS 0.5 "console"
-shirley:/$
+shirley:/$ blk /dev/ram0 0
+0000  53 48 52 46 53 31 00 00 01 00 00 00 0d 00 00 00  SHRFS1..........
+0010  20 00 00 00 00 06 00 00 00 38 00 00 00 00 00 00   ........8......
+shirley:/$ exec /bin/hello
+Running /bin/hello. It takes over the CPU:
+the shell does not come back until the machine restarts.
+Hello! Shirley's OS.
 ```
 
 Booting x86_64 under QEMU prints the following from the guest kernel's own serial port:
@@ -105,10 +127,16 @@ Platform: QEMU x86_64
 Machine: QEMU PC with SeaBIOS firmware
 Memory regions: 8
 Usable memory: 511 MiB
-Free pages: 130867
+Free pages: 130844
 Interrupts: enabled
 Timer: 100 Hz
-Root file system: 11 entries, 3311 bytes
+Root file system: 13 entries, 13316 bytes
+Devices: 5
+[device] console type=char
+[device] null type=char
+[device] uart0 type=char
+[device] kbd0 type=input
+[device] ram0 type=block
 
 Welcome to ShirleyOS.
 
@@ -126,10 +154,18 @@ shirley:/$ ls
    <dir>  docs/
    <dir>  etc/
    <dir>  home/
-4 entries
+   <dir>  bin/
+   <dir>  dev/
+6 entries
 shirley:/$ cat /etc/version
 ShirleyOS 0.5 "console"
-shirley:/$
+shirley:/$ blk /dev/ram0 0
+0000  53 48 52 46 53 31 00 00 01 00 00 00 0d 00 00 00  SHRFS1..........
+0010  20 00 00 00 00 06 00 00 00 38 00 00 00 00 00 00   ........8......
+shirley:/$ exec /bin/hello
+Running /bin/hello. It takes over the CPU:
+the shell does not come back until the machine restarts.
+Hello! Shirley's OS.
 ```
 
 記憶體數字會隨著 kernel 映像檔變大而變動。提示符出現之後就可以直接在這個終端機裡打字：按鍵沿著序列埠進來，由 IRQ4 送到 shell。QEMU 的 PS/2 按鍵事件來自顯示裝置，因此要走 IRQ1 那條路徑時，設定 `SHIRLEY_DISPLAY=1` 開一個顯示視窗，在視窗裡打字。
