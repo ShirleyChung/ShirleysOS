@@ -230,6 +230,57 @@ QEMU has no Apple Silicon machine model, so `apple_silicon` is currently a build
 
 The current direct QEMU loaders are in Development Boot Mode. The production architecture remains firmware, ShirleyOS bootloader, kernel, and `/bin/init`.
 
+## Creating a Bootable USB Installer / 建立可開機 USB 安裝程式
+
+ShirleyOS 提供工具可建立 USB 可開機安裝程式，支援在實體硬體上開機。
+
+ShirleyOS provides tools to create a bootable USB installer for booting on physical hardware.
+
+### Quick Start / 快速開始
+
+```bash
+# 建立 x86_64 USB 映像 / Create x86_64 USB image
+./tools/make-usb-installer.sh --arch x86_64
+
+# 建立 ARM64 USB 映像 / Create ARM64 USB image
+./tools/make-usb-installer.sh --arch arm64
+```
+
+映像檔將建立在 `usb-installer/shirleyos-{arch}-installer.img`
+
+The image will be created at `usb-installer/shirleyos-{arch}-installer.img`
+
+### Write to USB / 寫入 USB
+
+#### macOS
+```bash
+diskutil list                    # 找出 USB 裝置 / Find USB device
+diskutil unmountDisk /dev/diskN  # 卸載 / Unmount
+sudo dd if=usb-installer/shirleyos-x86_64-installer.img of=/dev/rdiskN bs=1m
+diskutil eject /dev/diskN        # 退出 / Eject
+```
+
+#### Linux
+```bash
+lsblk                            # 找出 USB 裝置 / Find USB device
+sudo umount /dev/sdX*            # 卸載分割區 / Unmount partitions
+sudo dd if=usb-installer/shirleyos-x86_64-installer.img of=/dev/sdX bs=4M status=progress && sync
+sudo eject /dev/sdX              # 退出 / Eject
+```
+
+### Boot from USB / 從 USB 開機
+
+1. 將 USB 插入電腦 / Insert USB into computer
+2. 開機時按 F2, F12, DEL 或 ESC / Press F2, F12, DEL, or ESC during boot
+3. 選擇 USB 裝置開機 / Select USB device to boot
+4. 在 BIOS/UEFI 中確認：/ Confirm in BIOS/UEFI:
+   - 使用 UEFI 模式（非 Legacy）/ Use UEFI mode (not Legacy)
+   - 停用 Secure Boot / Disable Secure Boot
+
+詳細說明請參考：[docs/USB_INSTALLER.md](docs/USB_INSTALLER.md)
+
+For detailed instructions, see: [docs/USB_INSTALLER.md](docs/USB_INSTALLER.md)
+
 ## Build
 
 預設目標是 host build，它會編譯與架構中立的核心元件與韌體記憶體地圖解析器，讓它們能在開發機器上進行測試：
