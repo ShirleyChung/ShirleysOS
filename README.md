@@ -190,6 +190,15 @@ The ISO command builds the x86_64 UEFI target and writes
 `dist/shirleyos-x86_64-uefi.iso`. Configure the VMware guest to use UEFI firmware,
 mount the ISO as its virtual CD/DVD, and boot it.
 
+若要建立 ARM64 UEFI ISO，使用：
+
+```sh
+./shirley iso arm64_uefi
+```
+
+產物為 `dist/shirleyos-arm64-uefi.iso`，適用於支援 ARM64 虛擬機的 VMware Fusion
+或其他 ARM64 UEFI 虛擬化環境。
+
 在 macOS 上執行 ShirleyOS 時，必要時請明確安裝主機端工具：
 
 ```sh

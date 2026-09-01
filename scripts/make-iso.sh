@@ -1,14 +1,21 @@
 #!/usr/bin/env bash
-# Build a bootable UEFI ISO for VMware and other x86_64 virtual machines.
+# Build a bootable UEFI ISO for VMware and other x86_64/ARM64 virtual machines.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 TARGET=${1:-x86_64_uefi}
-OUTPUT=${2:-"$ROOT/dist/shirleyos-x86_64-uefi.iso"}
+if [[ "$TARGET" == "arm64_uefi" ]]; then
+    DEFAULT_OUTPUT="$ROOT/dist/shirleyos-arm64-uefi.iso"
+    EFI_NAME=BOOTAA64.EFI
+else
+    DEFAULT_OUTPUT="$ROOT/dist/shirleyos-x86_64-uefi.iso"
+    EFI_NAME=BOOTX64.EFI
+fi
+OUTPUT=${2:-$DEFAULT_OUTPUT}
 ESP_DEVICE=
 
-if [[ "$TARGET" != "x86_64_uefi" ]]; then
-    echo "Only x86_64_uefi is currently supported for ISO output: $TARGET" >&2
+if [[ "$TARGET" != "x86_64_uefi" && "$TARGET" != "arm64_uefi" ]]; then
+    echo "Supported ISO targets are x86_64_uefi and arm64_uefi: $TARGET" >&2
     exit 2
 fi
 
@@ -19,7 +26,7 @@ if [[ -z "$XORRISO" ]]; then
 fi
 
 ESP=$(sh "$ROOT/scripts/build.sh" "$TARGET" | tail -n 1)
-EFI="$ESP/EFI/BOOT/BOOTX64.EFI"
+EFI="$ESP/EFI/BOOT/$EFI_NAME"
 KERNEL="$ESP/shirley/kernel.elf"
 [[ -f "$EFI" ]] || { echo "Missing UEFI loader: $EFI" >&2; exit 1; }
 [[ -f "$KERNEL" ]] || { echo "Missing kernel: $KERNEL" >&2; exit 1; }
