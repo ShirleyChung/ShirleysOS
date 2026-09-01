@@ -59,6 +59,23 @@ bool map_kernel(memory::AddressSpace& space) {
     return true;
 }
 
+// Keep allocator-owned RAM reachable by EL1/ring 0 while a process page table
+// is active. The mappings deliberately omit User, so the process cannot touch
+// physical memory. map_kernel() runs afterwards and restores executable flags
+// on the kernel image where ranges overlap.
+#if defined(SHIRLEY_ARCH_X86_64)
+bool map_managed_memory(memory::AddressSpace& space) {
+    for (std::size_t extent = 0; extent < memory::managed_extent_count(); ++extent) {
+        for (auto address = memory::managed_extent_begin(extent);
+             address < memory::managed_extent_end(extent); address += memory::page_size) {
+            if (!space.map(address, address, memory::PageFlags::Read | memory::PageFlags::Write))
+                return false;
+        }
+    }
+    return true;
+}
+#endif
+
 // 正在載入的映像暫放在這裡。放在 .bss 而不是堆疊或堆積：核心沒有堆積，而
 // 這份緩衝區遠大於任何一個核心堆疊。因為是 .bss，它不佔核心映像的任何一個
 // 位元組。一次只載入一個程式，所以一份就夠——等到有行程之後，這個假設要跟著
@@ -119,7 +136,7 @@ bool launch(const char* path, int* status) {
     process::reset();
 #if defined(SHIRLEY_ARCH_X86_64)
     arch::x86_64::PageTable address_space;
-    if (!address_space.initialize() || !map_kernel(address_space) ||
+    if (!address_space.initialize() || !map_managed_memory(address_space) || !map_kernel(address_space) ||
         !map_platform_devices(address_space)) return false;
     Image image{};
     if (!load_elf(image_buffer, size, shirley::boot::elf_machine_x86_64, address_space, image))
@@ -137,21 +154,34 @@ bool launch(const char* path, int* status) {
     if (status != nullptr) *status = code;
     return true;
 #elif defined(SHIRLEY_ARCH_ARM64)
+    // A child can be launched by /bin/init while its address space is active.
+    // The page-table builder writes physical pages directly, so temporarily
+    // return EL1 to the kernel's identity-mapped state while constructing it.
+    const bool nested = arch::arm64::mmu_enabled();
+    const auto previous_space = arch::current_address_space();
+    if (nested) arch::arm64::mmu_disable();
+    const auto restore_parent = [&]() {
+        if (nested) arch::arm64::mmu_enable(previous_space);
+    };
     arch::arm64::PageTable address_space;
     if (!address_space.initialize() || !map_kernel(address_space) ||
-        !map_platform_devices(address_space)) return false;
+        !map_platform_devices(address_space)) { restore_parent(); return false; }
     Image image{};
     if (!load_elf(image_buffer, size, shirley::boot::elf_machine_aarch64, address_space, image))
-        return false;
+        { restore_parent(); return false; }
     // 核心開機時 MMU 尚未啟用，因此這裡打開它並指向程式的轉換表；行程 exit
     // 後再關掉 MMU，回到核心無轉換的狀態，剛才的轉換表才能安全釋放。
     //
     // The kernel boots with the MMU off, so enable it here pointed at the
     // program's translation table; turn it off again once the process exits,
     // back to the kernel's no-translation state, so that table can be freed.
-    if (!arch::arm64::mmu_enable(address_space.root())) return false;
+    if (!arch::arm64::mmu_enable(address_space.root())) { restore_parent(); return false; }
     const int code = arch::enter_userspace(image.entry, image.stack);
     arch::arm64::mmu_disable();
+    // PageTable walks and frees physical table pages directly, so tear it down
+    // before restoring the parent's translated address space.
+    address_space.destroy();
+    if (nested && !arch::arm64::mmu_enable(previous_space)) return false;
     if (status != nullptr) *status = code;
     return true;
 #else

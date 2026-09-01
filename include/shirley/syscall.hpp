@@ -20,6 +20,12 @@ enum class Number : std::uint64_t {
     Read = 3,   // read(fd, buffer, length)
     Open = 4,   // open(path, flags)
     Close = 5,  // close(fd)
+    Stat = 6,   // stat(path, info)
+    List = 7,   // list(path, position, info)
+    Uptime = 8, // uptime(info)
+    Exec = 9,   // exec(path), returns the child's status
+    Mount = 10, // mount_info(position, info)
+    BlockRead = 11, // block_read(request)
 };
 
 // Architecture adapters fill arguments in the common syscall register order.

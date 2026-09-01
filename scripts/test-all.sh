@@ -180,6 +180,14 @@ def expect(answer, needle, what):
 if not wait_for(prompt, timeout):
     fail('The shell prompt never appeared')
 
+# help is generated from the command registries: each row calls that command's
+# description() callback, and the three execution domains stay visibly split.
+answer = type_line('help')
+expect(answer, 'User-space shell built-ins:', 'help shell built-ins')
+expect(answer, 'Kernel-backed commands:', 'help kernel commands')
+expect(answer, 'User-space executable commands:', 'help executable commands')
+expect(answer, "list a directory through the kernel VFS", 'help description callback')
+
 # x86 目標先用注入的實體按鍵敲一行指令：每個字元都必須回顯，而且指令要真的
 # 執行，這證明 IRQ1 的 end-of-interrupt 沒有漏掉。ARM64 沒有 PS/2 鍵盤，
 # 它的輸入全部走序列埠，由後面共用的那幾行指令涵蓋。

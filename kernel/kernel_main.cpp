@@ -11,6 +11,7 @@
 #include "shirley/rootfs.hpp"
 #include "shirley/scheduler.hpp"
 #include "shirley/shell.hpp"
+#include "shirley/user_loader.hpp"
 #include "shirley/vfs.hpp"
 
 namespace {
@@ -141,5 +142,14 @@ extern "C" [[noreturn]] void kernel_main(const shirley::BootInfo* boot_info) {
     // Boot ends here and the machine becomes this prompt. The shell reads the
     // keystrokes interrupts deliver and, with nothing to read, parks in a
     // low-power wait rather than polling any device.
+    // PID 1 is now a real user-space program.  The old kernel shell remains a
+    // recovery console only, so a malformed or missing /bin/init still leaves
+    // the machine diagnosable.
+    int init_status = 0;
+    if (!shirley::user::launch("/bin/init", &init_status)) {
+        shirley::console::write("init: could not start; entering recovery shell\n");
+        shirley::shell::run();
+    }
+    shirley::console::write("init exited; entering recovery shell\n");
     shirley::shell::run();
 }

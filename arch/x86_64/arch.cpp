@@ -13,7 +13,8 @@ namespace {
 // that started the process so a syscall handler never overwrites the
 // UserContext saved on that stack. Being .bss, launch's map_kernel already maps
 // it into every user address space.
-alignas(16) unsigned char syscall_stack[16 * 1024];
+alignas(16) unsigned char syscall_stacks[2][16 * 1024];
+unsigned user_depth = 0;
 
 // 目前正在執行的使用者行程保存的核心狀態；exit_userspace 用它跳回去。
 // The saved kernel state of the running user process; exit_userspace uses it to
@@ -88,10 +89,17 @@ int enter_userspace(std::uintptr_t entry, std::uintptr_t user_stack) {
     //
     // Point the syscall kernel stack at the separate syscall_stack rather than
     // this call chain, so the context saved here is never overwritten.
-    x86_64::gdt_set_kernel_stack(reinterpret_cast<std::uintptr_t>(syscall_stack) + sizeof(syscall_stack));
+    const unsigned stack_index = user_depth < 2 ? user_depth : 1;
+    ++user_depth;
+    x86_64::gdt_set_kernel_stack(reinterpret_cast<std::uintptr_t>(syscall_stacks[stack_index]) + sizeof(syscall_stacks[stack_index]));
     const long status = x86_64_save_and_enter(entry, user_stack, x86_64::user_code_selector,
                                               x86_64::user_data_selector, &context);
     user_context = previous;
+    --user_depth;
+    if (user_depth != 0) {
+        const unsigned parent = user_depth - 1 < 2 ? user_depth - 1 : 1;
+        x86_64::gdt_set_kernel_stack(reinterpret_cast<std::uintptr_t>(syscall_stacks[parent]) + sizeof(syscall_stacks[parent]));
+    }
     return static_cast<int>(status);
 }
 

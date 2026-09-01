@@ -66,7 +66,14 @@ arm64_exception_common:
     str x30, [sp, #(30 * 8)]
     // 記錄例外發生前的堆疊指標與處理器狀態。
     // Record the stack pointer and processor state from before the exception.
-    add x1, sp, #frame_size
+    // Exceptions from EL0 use SP_EL0; current-EL exceptions use the EL1 stack
+    // on which this frame was allocated.
+    cmp x0, #8
+    b.lo 1f
+    mrs x1, sp_el0
+    b 2f
+1:  add x1, sp, #frame_size
+2:
     str x1, [sp, #(31 * 8)]
     mrs x1, elr_el1
     str x1, [sp, #(32 * 8)]
@@ -88,6 +95,12 @@ arm64_exception_common:
     msr elr_el1, x1
     ldr x1, [sp, #(33 * 8)]
     msr spsr_el1, x1
+    ldr x1, [sp, #(36 * 8)]
+    cmp x1, #8
+    b.lo 3f
+    ldr x1, [sp, #(31 * 8)]
+    msr sp_el0, x1
+3:
     ldp x0, x1, [sp, #(0 * 8)]
     ldp x2, x3, [sp, #(2 * 8)]
     ldp x4, x5, [sp, #(4 * 8)]

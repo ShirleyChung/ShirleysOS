@@ -73,8 +73,12 @@ set(SHIRLEY_ROOTFS_EXTRA_FILES)
 if(NOT SHIRLEY_ARCH STREQUAL host)
   set(SHIRLEY_USER_DIR ${CMAKE_CURRENT_BINARY_DIR}/user-hello)
   set(SHIRLEY_USER_ELF ${SHIRLEY_USER_DIR}/hello.elf)
-  set(SHIRLEY_ROOTFS_EXTRA bin/hello=${SHIRLEY_USER_ELF})
-  set(SHIRLEY_ROOTFS_EXTRA_FILES ${SHIRLEY_USER_ELF})
+  set(SHIRLEY_INIT_DIR ${CMAKE_CURRENT_BINARY_DIR}/user-init)
+  set(SHIRLEY_INIT_ELF ${SHIRLEY_INIT_DIR}/init.elf)
+  # Use a pipe in the command-line value; a literal semicolon is a CMake list
+  # separator and would be emitted as a second shell command by Ninja.
+  set(SHIRLEY_ROOTFS_EXTRA "bin/hello=${SHIRLEY_USER_ELF},bin/init=${SHIRLEY_INIT_ELF}")
+  set(SHIRLEY_ROOTFS_EXTRA_FILES ${SHIRLEY_USER_ELF} ${SHIRLEY_INIT_ELF})
 endif()
 
 add_custom_command(OUTPUT ${SHIRLEY_ROOTFS_SOURCE}
@@ -233,29 +237,36 @@ else()
   set(SHIRLEY_USER_SYSCALL ${CMAKE_SOURCE_DIR}/libc/arch/arm64/syscall.S)
 endif()
 
-set(SHIRLEY_USER_OBJECTS)
-foreach(source
-    ${CMAKE_SOURCE_DIR}/user/hello/main.c
-    ${CMAKE_SOURCE_DIR}/libc/src/stdio/printf.c
-    ${CMAKE_SOURCE_DIR}/libc/src/unistd/write.c
-    ${CMAKE_SOURCE_DIR}/libc/src/unistd/read.c
-    ${CMAKE_SOURCE_DIR}/libc/src/unistd/open.c
-    ${CMAKE_SOURCE_DIR}/libc/src/unistd/close.c
-    ${CMAKE_SOURCE_DIR}/libc/src/unistd/_exit.c
-    ${SHIRLEY_USER_START}
-    ${SHIRLEY_USER_SYSCALL})
-  get_filename_component(stem ${source} NAME_WE)
-  get_filename_component(extension ${source} EXT)
-  set(object ${SHIRLEY_USER_DIR}/${stem}${extension}.o)
-  add_custom_command(OUTPUT ${object}
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${SHIRLEY_USER_DIR}
-    COMMAND ${CMAKE_C_COMPILER} --target=${SHIRLEY_USER_TARGET}
-            -ffreestanding -fno-builtin -fno-stack-protector -fno-pic
-            -I${CMAKE_SOURCE_DIR}/libc/include
-            -c ${source} -o ${object}
-    DEPENDS ${source})
-  list(APPEND SHIRLEY_USER_OBJECTS ${object})
-endforeach()
+function(shirley_user_program name main_source output directory)
+  set(objects)
+  foreach(source
+      ${main_source}
+      ${CMAKE_SOURCE_DIR}/libc/src/stdio/printf.c
+      ${CMAKE_SOURCE_DIR}/libc/src/unistd/write.c
+      ${CMAKE_SOURCE_DIR}/libc/src/unistd/read.c
+      ${CMAKE_SOURCE_DIR}/libc/src/unistd/open.c
+      ${CMAKE_SOURCE_DIR}/libc/src/unistd/close.c
+      ${CMAKE_SOURCE_DIR}/libc/src/unistd/_exit.c
+      ${SHIRLEY_USER_START}
+      ${SHIRLEY_USER_SYSCALL})
+    get_filename_component(stem ${source} NAME_WE)
+    get_filename_component(extension ${source} EXT)
+    set(object ${directory}/${stem}${extension}.o)
+    add_custom_command(OUTPUT ${object}
+      COMMAND ${CMAKE_COMMAND} -E make_directory ${directory}
+      COMMAND ${CMAKE_C_COMPILER} --target=${SHIRLEY_USER_TARGET}
+              -ffreestanding -fno-builtin -fno-stack-protector -fno-pic
+              -I${CMAKE_SOURCE_DIR}/libc/include
+              -c ${source} -o ${object}
+      DEPENDS ${source})
+    list(APPEND objects ${object})
+  endforeach()
+  add_custom_command(OUTPUT ${output}
+    COMMAND ${SHIRLEY_LLD} -T ${SHIRLEY_USER_LINKER} --build-id=none -z max-page-size=4096
+            -o ${output} ${objects}
+    DEPENDS ${objects} ${SHIRLEY_USER_LINKER})
+  add_custom_target(shirley-user-${name} ALL DEPENDS ${output})
+endfunction()
 
 # -z max-page-size=4096：aarch64 的連結器預設以 64 KiB 為最大頁面大小對齊
 # 節區，於是一個 2 KiB 的程式會被墊成 70 KiB 的檔案。核心的分頁一律是 4 KiB，
@@ -267,11 +278,8 @@ endforeach()
 # kernel pages at 4 KiB and that padding buys nothing — and now that this ELF
 # goes into the root file system image, every extra byte is loaded with the
 # kernel.
-add_custom_command(OUTPUT ${SHIRLEY_USER_ELF}
-  COMMAND ${SHIRLEY_LLD} -T ${SHIRLEY_USER_LINKER} --build-id=none -z max-page-size=4096
-          -o ${SHIRLEY_USER_ELF} ${SHIRLEY_USER_OBJECTS}
-  DEPENDS ${SHIRLEY_USER_OBJECTS} ${SHIRLEY_USER_LINKER})
-add_custom_target(shirley-user-hello ALL DEPENDS ${SHIRLEY_USER_ELF})
+shirley_user_program(hello ${CMAKE_SOURCE_DIR}/user/hello/main.c ${SHIRLEY_USER_ELF} ${SHIRLEY_USER_DIR})
+shirley_user_program(init ${CMAKE_SOURCE_DIR}/user/init/main.c ${SHIRLEY_INIT_ELF} ${SHIRLEY_INIT_DIR})
 
 # 平台層原始碼；每個平台自行決定要使用哪些韌體格式與共用裝置驅動程式。
 # Platform layer sources; each platform picks the firmware formats and shared

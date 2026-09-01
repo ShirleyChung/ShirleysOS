@@ -152,4 +152,7 @@ void free_page(PhysicalAddress address) {
 }
 std::size_t total_pages() { return total; }
 std::size_t free_pages() { return available; }
+std::size_t managed_extent_count() { return managed_count; }
+PhysicalAddress managed_extent_begin(std::size_t index) { return index < managed_count ? managed[index].begin : 0; }
+PhysicalAddress managed_extent_end(std::size_t index) { return index < managed_count ? managed[index].end : 0; }
 } // namespace shirley::memory

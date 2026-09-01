@@ -22,5 +22,11 @@ PhysicalAddress allocate_page();
 void free_page(PhysicalAddress);
 std::size_t total_pages();
 std::size_t free_pages();
+// Physical extents owned by the allocator. Kernels map these supervisor-only
+// into a process address space so page-table construction can access newly
+// allocated pages while that process is active.
+std::size_t managed_extent_count();
+PhysicalAddress managed_extent_begin(std::size_t index);
+PhysicalAddress managed_extent_end(std::size_t index);
 
 } // namespace shirley::memory
