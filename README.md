@@ -174,6 +174,22 @@ The memory figures move as the kernel image grows. Once the prompt appears, type
 
 ## Running ShirleyOS on macOS
 
+### 建立 VMware 可開機 ISO / Create a VMware-bootable ISO
+
+在 macOS 上建立 x86_64 UEFI ISO：
+
+```sh
+brew install cmake ninja llvm lld qemu xorriso
+./shirley iso
+```
+
+產物會輸出到 `dist/shirleyos-x86_64-uefi.iso`。在 VMware Workstation/Fusion
+建立虛擬機時選擇 `UEFI` 韌體，將此 ISO 掛載到虛擬光碟機後開機即可。
+
+The ISO command builds the x86_64 UEFI target and writes
+`dist/shirleyos-x86_64-uefi.iso`. Configure the VMware guest to use UEFI firmware,
+mount the ISO as its virtual CD/DVD, and boot it.
+
 在 macOS 上執行 ShirleyOS 時，必要時請明確安裝主機端工具：
 
 ```sh

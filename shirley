@@ -9,8 +9,9 @@ target=${2:-$host}
 case "$command" in
   arm64|arm64_uefi|x86_64|x86_64_uefi|apple_silicon) target=$command; command=run ;;
   build|run|debug) ;;
+  iso) target=${2:-x86_64_uefi} ;;
   test) exec sh "$root/scripts/test-all.sh" ;;
-  *) echo "Usage: ./shirley [<target>|build|run|debug|test] [<target>]" >&2
+  *) echo "Usage: ./shirley [<target>|build|run|debug|iso|test] [<target>]" >&2
      echo "Targets: arm64 arm64_uefi x86_64 x86_64_uefi apple_silicon" >&2
      exit 2 ;;
 esac
@@ -39,4 +40,5 @@ case "$command" in
   build) exec sh "$root/scripts/build.sh" "$target" ;;
   run) exec sh "$root/scripts/run-$target.sh" ;;
   debug) exec sh "$root/scripts/debug-$target.sh" ;;
+  iso) exec bash "$root/scripts/make-iso.sh" "$target" ;;
 esac
