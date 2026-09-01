@@ -102,10 +102,23 @@ void exception_unregister(unsigned vector) {
 extern "C" void arm64_exception_dispatch(shirley::arch::arm64::ExceptionFrame* frame) {
     using namespace shirley::arch::arm64;
     const auto vector = frame->vector;
-    // A lower-EL synchronous exception is the SVC syscall entry. Use ESR's
-    // exception class as the authoritative check; it remains correct even if
-    // firmware or a vector-table diagnostic reports an adjacent slot.
-    if (((frame->esr >> 26) & 0x3f) == 0x15) {
+    // 系統呼叫是使用者程式在 EL0（AArch64）執行 svc 進來的，只會落在
+    // lower_el_aarch64_sync 這個入口。判斷必須以向量入口為準，不能只看 ESR 的
+    // 例外分類：ESR_EL1 只在同步例外時更新，IRQ 進來時它仍保留上一次同步例外
+    // 的值。核心在 user 行程結束後會繼續執行並持續收到計時器 IRQ，若只憑
+    // ESR，那個殘留的 0x15（SVC）就會讓 IRQ 被誤當成系統呼叫、never EOI，於是
+    // 卡在無止盡的中斷風暴裡。確認過向量入口後，再用 ESR 分類確認確實是 svc。
+    //
+    // A syscall enters when a user program at EL0 (AArch64) executes svc, which
+    // only ever lands on the lower_el_aarch64_sync entry. The vector entry, not
+    // ESR's exception class, is the authoritative test: ESR_EL1 is updated only
+    // on a synchronous exception and keeps its previous value when an IRQ
+    // arrives. The kernel now keeps running after a user process exits and goes
+    // on taking timer IRQs, so relying on ESR would let that stale 0x15 (SVC)
+    // make an IRQ look like a syscall that is never EOI'd, wedging the machine
+    // in an endless interrupt storm. With the vector confirmed, ESR's class
+    // confirms it really is an svc.
+    if (vector == lower_el_aarch64_sync && ((frame->esr >> 26) & 0x3f) == 0x15) {
         shirley::syscall::Context context{
             frame->x[8],
             {frame->x[0], frame->x[1], frame->x[2]},

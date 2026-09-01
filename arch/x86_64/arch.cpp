@@ -1,6 +1,26 @@
 #include "internal.hpp"
 
 namespace shirley::arch {
+namespace {
+
+// 使用者行程做系統呼叫時，ring 3 -> ring 0 的中斷會從 TSS 載入 RSP0，因此
+// 需要一個核心堆疊。它獨立於啟動核心行程的那條呼叫鏈，這樣系統呼叫處理常式
+// 就不會覆寫保存在該堆疊上的 UserContext。它是 .bss，因此已被 launch 的
+// map_kernel 映射進每個使用者位址空間。
+//
+// A user process's syscall takes a ring 3 -> ring 0 interrupt that loads RSP0
+// from the TSS, so it needs a kernel stack. It is separate from the call chain
+// that started the process so a syscall handler never overwrites the
+// UserContext saved on that stack. Being .bss, launch's map_kernel already maps
+// it into every user address space.
+alignas(16) unsigned char syscall_stack[16 * 1024];
+
+// 目前正在執行的使用者行程保存的核心狀態；exit_userspace 用它跳回去。
+// The saved kernel state of the running user process; exit_userspace uses it to
+// jump back.
+x86_64::UserContext* user_context = nullptr;
+
+} // namespace
 
 // 開機載入器只把處理器帶進長模式；GDT、TSS、IDT 與 CPU 功能在這裡接手。
 // The boot loader only gets the processor into long mode. The GDT, TSS, IDT,
@@ -56,10 +76,30 @@ void switch_address_space(AddressSpaceHandle handle) {
 
 void set_kernel_stack(std::uintptr_t stack_top) { x86_64::gdt_set_kernel_stack(stack_top); }
 
-// 以 IRET 從 Ring 0 切換到 Ring 3。
-// Drop from ring 0 to ring 3 with IRET.
-[[noreturn]] void enter_userspace(std::uintptr_t entry, std::uintptr_t user_stack) {
-    x86_64_enter_userspace(entry, user_stack, x86_64::user_code_selector, x86_64::user_data_selector);
+// 以 IRET 從 Ring 0 切換到 Ring 3，並在行程 exit 時返回其結束碼。
+// Drop from ring 0 to ring 3 with IRET, returning the process's exit status
+// when it calls exit.
+int enter_userspace(std::uintptr_t entry, std::uintptr_t user_stack) {
+    x86_64::UserContext context{};
+    auto* previous = user_context;
+    user_context = &context;
+    // 系統呼叫的核心堆疊指向獨立的 syscall_stack，而不是目前這條呼叫鏈，
+    // 保存在此的 context 才不會被覆寫。
+    //
+    // Point the syscall kernel stack at the separate syscall_stack rather than
+    // this call chain, so the context saved here is never overwritten.
+    x86_64::gdt_set_kernel_stack(reinterpret_cast<std::uintptr_t>(syscall_stack) + sizeof(syscall_stack));
+    const long status = x86_64_save_and_enter(entry, user_stack, x86_64::user_code_selector,
+                                              x86_64::user_data_selector, &context);
+    user_context = previous;
+    return static_cast<int>(status);
+}
+
+// 由 exit 系統呼叫呼叫；跳回 enter_userspace 保存的核心狀態並讓它返回 status。
+// Called by the exit syscall; jumps back to the kernel state enter_userspace
+// saved and makes it return status.
+[[noreturn]] void exit_userspace(int status) {
+    x86_64_restore_and_exit(user_context, static_cast<long>(status));
 }
 
 // x86_64 的 vector 就是 IDT 向量編號 0-255。

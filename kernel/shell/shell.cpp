@@ -574,19 +574,23 @@ void command_blk() {
 // the ELF loader meet: the shell hands over a path, the loader sees only the
 // image, and neither knows which device the file came off.
 void run_program(const char* path) {
-    // user 程式目前沒有行程收尾機制，離開後回不到 shell，因此在交出控制權
-    // 之前把這件事講清楚。
+    // 執行程式並等它結束。行程現在有收尾機制：exit 系統呼叫會把控制權交回
+    // 這裡，因此程式跑完之後提示符會再度出現，結束碼也一併印出來。
     //
-    // A user program has no teardown yet and cannot come back to the shell, so
-    // this says as much before handing control over.
-    write("Running ");
-    write(path);
-    write_line(". It takes over the CPU:");
-    write_line("the shell does not come back until the machine restarts.");
-    if (!user::launch(path)) {
+    // Run the program and wait for it to finish. A process has teardown now:
+    // the exit syscall hands control back here, so the prompt returns after the
+    // program is done and its exit status is printed alongside.
+    int status = 0;
+    if (!user::launch(path, &status)) {
         write(path);
         write_line(": could not be started");
+        return;
     }
+    write("[");
+    write(path);
+    write(" exited with status ");
+    write_number(static_cast<std::uint64_t>(status) & 0xff);
+    write_line("]");
 }
 
 void command_exec() {

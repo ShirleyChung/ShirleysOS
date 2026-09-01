@@ -27,6 +27,25 @@ struct InterruptFrame {
     std::uint64_t rip, cs, rflags, rsp, ss;
 };
 
+// 進入使用者模式前保存的核心執行狀態，讓 exit 系統呼叫能跳回這裡返回。
+// 欄位順序與偏移量必須與 segment.S 的 x86_64_save_and_enter/restore_and_exit
+// 完全一致。
+//
+// The kernel execution state saved before entering user mode, so the exit
+// syscall can longjmp back here and return. The field order and offsets must
+// match x86_64_save_and_enter/restore_and_exit in segment.S exactly.
+struct UserContext {
+    std::uint64_t rbx;     // 0
+    std::uint64_t rbp;     // 8
+    std::uint64_t r12;     // 16
+    std::uint64_t r13;     // 24
+    std::uint64_t r14;     // 32
+    std::uint64_t r15;     // 40
+    std::uint64_t rsp;     // 48
+    std::uint64_t rip;     // 56，enter 的返回位址 / the return address into enter
+    std::uint64_t rflags;  // 64
+};
+
 // CPU 辨識與基本功能啟用。
 // CPU identification and basic feature enablement.
 void cpu_initialize();
@@ -55,8 +74,16 @@ extern "C" {
 void x86_64_load_gdt(const void* pointer, std::uint16_t code_selector, std::uint16_t data_selector);
 void x86_64_load_idt(const void* pointer);
 void x86_64_load_tss(std::uint16_t selector);
-[[noreturn]] void x86_64_enter_userspace(std::uint64_t entry, std::uint64_t stack,
-                                         std::uint16_t code_selector, std::uint16_t data_selector);
+// 保存核心狀態到 *context，然後以 IRET 進入 ring 3。使用者行程呼叫 exit 時
+// 由 x86_64_restore_and_exit 跳回本函式的呼叫端，回傳值即為結束碼。
+//
+// Save the kernel state into *context, then IRET into ring 3. When the user
+// process calls exit, x86_64_restore_and_exit jumps back to this function's
+// caller and the return value is the exit status.
+long x86_64_save_and_enter(std::uint64_t entry, std::uint64_t stack,
+                           std::uint16_t code_selector, std::uint16_t data_selector,
+                           shirley::arch::x86_64::UserContext* context);
+[[noreturn]] void x86_64_restore_and_exit(shirley::arch::x86_64::UserContext* context, long status);
 // 由 interrupt.S 產生的 256 個中斷入口；每個入口佔用相同的位元組數，
 // 實際間距由頭尾兩個符號反推，不必在組語與 C++ 兩邊各寫一次。
 //

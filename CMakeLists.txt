@@ -108,6 +108,7 @@ set(SHIRLEY_KERNEL_SOURCES
   kernel/io/input_queue.cpp
   kernel/io/standard_streams.cpp
   kernel/memory/page_allocator.cpp
+  kernel/process/process.cpp
   kernel/process/scheduler.cpp
   kernel/runtime/compiler_runtime.cpp
   kernel/shell/shell.cpp
@@ -138,7 +139,6 @@ if(SHIRLEY_ARCH STREQUAL host)
     kernel/device/device.cpp
     kernel/device/null.cpp
     kernel/elf/user_loader.cpp
-    kernel/syscall/syscall.cpp
     kernel/format/number.cpp
     kernel/fs/shrfs.cpp
     kernel/fs/shrfs_vfs.cpp
@@ -238,6 +238,10 @@ foreach(source
     ${CMAKE_SOURCE_DIR}/user/hello/main.c
     ${CMAKE_SOURCE_DIR}/libc/src/stdio/printf.c
     ${CMAKE_SOURCE_DIR}/libc/src/unistd/write.c
+    ${CMAKE_SOURCE_DIR}/libc/src/unistd/read.c
+    ${CMAKE_SOURCE_DIR}/libc/src/unistd/open.c
+    ${CMAKE_SOURCE_DIR}/libc/src/unistd/close.c
+    ${CMAKE_SOURCE_DIR}/libc/src/unistd/_exit.c
     ${SHIRLEY_USER_START}
     ${SHIRLEY_USER_SYSCALL})
   get_filename_component(stem ${source} NAME_WE)

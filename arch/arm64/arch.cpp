@@ -1,6 +1,19 @@
 #include "internal.hpp"
 
 namespace shirley::arch {
+namespace {
+
+// 目前正在執行的使用者行程保存的核心狀態；exit_userspace 用它跳回去。
+// ARM64 的 EL1 不會在 EL0 例外時切換堆疊指標，因此系統呼叫自然接在啟動行程
+// 的那條呼叫鏈之下，不需要另外的核心堆疊。
+//
+// The saved kernel state of the running user process; exit_userspace uses it to
+// jump back. On ARM64, EL1 does not switch stack pointers on an exception from
+// EL0, so a syscall naturally continues below the call chain that started the
+// process and needs no separate kernel stack.
+arm64::UserContext* user_context = nullptr;
+
+} // namespace
 
 // 開機組合語言只建立堆疊；CPU 功能與例外向量表在這裡接手。
 // The boot assembly only establishes a stack. CPU features and the exception
@@ -59,8 +72,22 @@ void switch_address_space(AddressSpaceHandle handle) {
 // separate configuration.
 void set_kernel_stack(std::uintptr_t) {}
 
-[[noreturn]] void enter_userspace(std::uintptr_t entry, std::uintptr_t user_stack) {
-    arm64_enter_userspace(entry, user_stack);
+// 以 ERET 進入 EL0，並在行程 exit 時返回其結束碼。
+// ERET into EL0, returning the process's exit status when it calls exit.
+int enter_userspace(std::uintptr_t entry, std::uintptr_t user_stack) {
+    arm64::UserContext context{};
+    auto* previous = user_context;
+    user_context = &context;
+    const long status = arm64_save_and_enter(entry, user_stack, &context);
+    user_context = previous;
+    return static_cast<int>(status);
+}
+
+// 由 exit 系統呼叫呼叫；跳回 enter_userspace 保存的核心狀態並讓它返回 status。
+// Called by the exit syscall; jumps back to the kernel state enter_userspace
+// saved and makes it return status.
+[[noreturn]] void exit_userspace(int status) {
+    arm64_restore_and_exit(user_context, static_cast<long>(status));
 }
 
 // ARM64 的 vector 為例外向量表入口編號，定義於 shirley/arch/arm64/exception.hpp。

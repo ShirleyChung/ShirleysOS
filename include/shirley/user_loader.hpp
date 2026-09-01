@@ -38,19 +38,25 @@ struct Image {
 bool load_elf(const void* image, std::size_t size, std::uint16_t machine,
               memory::AddressSpace& address_space, Image& result);
 
-// 從 VFS 讀出一個路徑上的 ELF 並執行它；成功後不會返回。程式不存在、太大、
-// 不是這個架構的 ELF，或位址空間建不起來時回傳 false。
+// 從 VFS 讀出一個路徑上的 ELF、在自己的位址空間裡執行它，並在它呼叫 exit 之後
+// 返回。成功執行回傳 true，並把程式的結束碼寫進 *status（status 可為 null）；
+// 程式不存在、太大、不是這個架構的 ELF，或位址空間建不起來時回傳 false。
 //
 // 這是核心第一次以「檔案」而不是「連結進來的位元組」看待一個程式：路徑由
-// VFS 解析，內容由檔案系統讀出，載入器只認得那份映像。
+// VFS 解析，內容由檔案系統讀出，載入器只認得那份映像。行程結束後控制權會回到
+// 這裡，位址空間被拆除，呼叫端（shell）因此能再度取得提示符。
 //
-// Read the ELF at a path through the VFS and run it; does not return on
-// success. Returns false when the program does not exist, is too large, is not
-// an ELF for this architecture, or the address space cannot be built.
+// Read the ELF at a path through the VFS, run it in its own address space, and
+// return once it calls exit. Returns true when it ran, writing the program's
+// exit status into *status (which may be null); returns false when the program
+// does not exist, is too large, is not an ELF for this architecture, or the
+// address space cannot be built.
 //
 // This is the first time the kernel treats a program as a file rather than as
 // bytes linked into itself: the VFS resolves the path, the file system reads
-// the content, and the loader knows nothing but that image.
-bool launch(const char* path);
+// the content, and the loader knows nothing but that image. Control returns
+// here once the process exits and its address space is torn down, so the caller
+// (the shell) gets its prompt back.
+bool launch(const char* path, int* status = nullptr);
 
 } // namespace shirley::user

@@ -10,6 +10,13 @@ file content in, zeroes the `.bss` tail, and allocates one writable stack page.
 Nothing on the way down knows which file system or which device the bytes came
 from — a path is the whole of what the loader is told.
 
+`launch()` then runs the program in that address space and returns once it
+exits, reporting its status. Entering switches to the program's page table (and,
+on ARM64, turns the MMU on); on return the kernel's address space is restored
+(and the MMU turned off on ARM64) before the program's page tables are freed.
+The entry/exit and the return-to-kernel path live in the architecture layer; see
+"User programs and system calls" in `OS_SPEC.md`.
+
 The buffer is a fixed 64 KiB in `.bss`: the loader has to walk program headers
 and therefore needs the image contiguous, and the kernel has no heap to size a
 buffer from. A larger program is refused with a message rather than truncated

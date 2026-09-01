@@ -107,14 +107,55 @@ arm64_exception_common:
     add sp, sp, #frame_size
     eret
 
-// [[noreturn]] void arm64_enter_userspace(uint64_t entry, uint64_t stack)
-.global arm64_enter_userspace
-arm64_enter_userspace:
+// long arm64_save_and_enter(uint64_t entry, uint64_t stack, UserContext* context)
+// x0=entry, x1=stack, x2=context
+.global arm64_save_and_enter
+arm64_save_and_enter:
+    // 先保存核心的被呼叫者保存暫存器、返回位址、堆疊指標與中斷遮罩狀態，
+    // exit 系統呼叫才有辦法跳回這裡並讓本函式正常返回。
+    // Save the kernel's callee-saved registers, the return address, the stack
+    // pointer, and the interrupt mask state, so the exit syscall can jump back
+    // here and let this function return normally.
+    stp x19, x20, [x2, #0]
+    stp x21, x22, [x2, #16]
+    stp x23, x24, [x2, #32]
+    stp x25, x26, [x2, #48]
+    stp x27, x28, [x2, #64]
+    stp x29, x30, [x2, #80]
+    mov x3, sp
+    str x3, [x2, #96]
+    mrs x3, daif
+    str x3, [x2, #104]
     // SPSR 的 M[3:0] 為 0 代表返回 EL0t，並且不遮罩 IRQ/FIQ。
     // M[3:0] of SPSR set to 0 means return to EL0t with IRQ and FIQ unmasked.
     msr elr_el1, x0
     msr sp_el0, x1
-    mov x2, #0
-    msr spsr_el1, x2
+    mov x3, #0
+    msr spsr_el1, x3
     isb
     eret
+
+// [[noreturn]] void arm64_restore_and_exit(UserContext* context, long status)
+// x0=context, x1=status
+.global arm64_restore_and_exit
+arm64_restore_and_exit:
+    // 從 context 還原被呼叫者保存暫存器與堆疊，還原核心的中斷遮罩狀態，把
+    // status 放進回傳暫存器，最後返回 arm64_save_and_enter 的呼叫端——對它而
+    // 言，那次呼叫就這樣以 status 作為回傳值返回。
+    //
+    // Restore the callee-saved registers and stack from context, restore the
+    // kernel's interrupt mask state, put status in the return register, then
+    // return to arm64_save_and_enter's caller: to it, that call simply returns
+    // with status as its value.
+    ldp x19, x20, [x0, #0]
+    ldp x21, x22, [x0, #16]
+    ldp x23, x24, [x0, #32]
+    ldp x25, x26, [x0, #48]
+    ldp x27, x28, [x0, #64]
+    ldp x29, x30, [x0, #80]
+    ldr x3, [x0, #96]
+    mov sp, x3
+    ldr x3, [x0, #104]
+    msr daif, x3
+    mov x0, x1
+    ret

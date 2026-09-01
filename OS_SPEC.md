@@ -907,15 +907,18 @@ rather than a truncation.
 ## 主控台 Shell / The console shell
 
 `shirley::shell::run()` 是核心啟動流程的最後一步，不會返回：開機之後，機器
-就是這個提示符。shell 跑在核心裡而不是 user 行程裡，因為行程還沒有辦法結束
-後把控制權交回給啟動它的人；`hello` 指令會先說明這件事，再把 CPU 交給嵌在
-核心裡的 user 程式。
+就是這個提示符。shell 本身跑在核心裡，但 `exec`（以及它的捷徑 `hello`）會把
+檔案系統裡的一個程式當成 user 行程執行；行程呼叫 exit 系統呼叫之後，控制權
+會回到 shell，提示符與結束碼一併出現，因此可以一個接一個地執行程式。系統
+呼叫與這條返回路徑見底下的〈使用者程式與系統呼叫〉。
 
 `shirley::shell::run()` is the last step of kernel start-up and never returns:
-after boot, the machine is this prompt. The shell runs inside the kernel rather
-than as a user process because a process cannot yet exit back to whatever
-started it; the `hello` command says so before handing the CPU to the user
-program embedded in the kernel.
+after boot, the machine is this prompt. The shell itself runs inside the kernel,
+but `exec` (and its shortcut `hello`) runs a program from the file system as a
+user process; once the process calls the exit syscall, control returns to the
+shell and the prompt reappears alongside the exit status, so programs can be run
+one after another. The syscalls and this return path are described in "User
+programs and system calls" below.
 
 行編輯器從標準輸入取字元，佇列空的時候停在等待中斷的低功耗狀態，不輪詢任何
 裝置。按鍵可能剛好落在檢查與等待之間，那一次會等到下一個計時器中斷才醒來，
@@ -944,6 +947,131 @@ the absolute path rebuilt from the entry itself, so the prompt always shows a
 normalized path rather than the `../..` that was typed. A platform with no
 input device, such as apple_silicon, gets no prompt: it would only lie, because
 no character can ever arrive.
+
+## 使用者程式與系統呼叫 / User programs and system calls
+
+一個 user 程式是一個檔案。`exec /bin/hello`（或捷徑 `hello`）走的是一條完整的
+路：VFS 解析路徑、檔案系統讀出內容、ELF loader 走 program header 把每個節區
+映射進一個全新的位址空間，然後核心跳進 EL0／ring 3 執行它。程式結束時控制權
+會回到 shell，這是 M3 的核心：核心能執行一個程式、收尾、再回到啟動它的地方。
+
+A user program is a file. `exec /bin/hello` (or the shortcut `hello`) is a
+complete path: the VFS resolves it, the file system reads it, the ELF loader
+walks its program headers and maps each segment into a fresh address space, and
+the kernel jumps into it at EL0/ring 3. Control returns to the shell when the
+program finishes, which is the heart of M3: the kernel can run a program, tear
+it down, and return to whatever started it.
+
+### 系統呼叫 ABI / The syscall ABI
+
+`include/shirley/syscall.hpp` 定義原生 ABI。系統呼叫編號放在第一個暫存器、最多
+三個引數放在其後，透過一道陷阱指令進入核心，結果由第一個引數暫存器帶回：
+
+`include/shirley/syscall.hpp` defines the native ABI. The syscall number goes in
+the first register and up to three arguments after it, a trap instruction enters
+the kernel, and the result comes back in the first argument register:
+
+| 架構 / arch | 編號 / number | 引數 / arguments | 陷阱 / trap | 結果 / result |
+| ----------- | ------------- | ---------------- | ----------- | ------------- |
+| x86_64      | `rax`         | `rdi`, `rsi`, `rdx` | `int 0x80` | `rax`      |
+| ARM64       | `x8`          | `x0`, `x1`, `x2`    | `svc #0`   | `x0`       |
+
+編號目前有五個：`write`(1)、`exit`(2)、`read`(3)、`open`(4)、`close`(5)。架構
+配接層（x86_64 的 IDT 向量 0x80、ARM64 的 EL0 同步例外）把暫存器填進共用的
+`syscall::Context`，再交給 `syscall::dispatch()`。`libc/arch/<arch>/syscall.S`
+的 trampoline 與 `libc/` 的包裝函式（`write`、`read`、`open`、`close`、`_exit`）
+與這些編號一致。
+
+There are five numbers today: `write`(1), `exit`(2), `read`(3), `open`(4),
+`close`(5). The architecture adapters — the IDT vector 0x80 on x86_64 and the
+EL0 synchronous exception on ARM64 — fill the registers into a shared
+`syscall::Context` and hand it to `syscall::dispatch()`. The trampoline in
+`libc/arch/<arch>/syscall.S` and the wrappers in `libc/` (`write`, `read`,
+`open`, `close`, `_exit`) agree with these numbers.
+
+ARM64 的系統呼叫判斷必須以例外向量入口為準，不能只看 `ESR_EL1` 的例外分類：
+`ESR_EL1` 只在同步例外時更新，IRQ 進來時它保留上一次的值。核心在行程結束後會
+繼續執行並持續收到計時器 IRQ，若只憑 `ESR`，殘留的 SVC 分類就會讓 IRQ 被誤當
+成系統呼叫而永遠不送 end-of-interrupt，卡進中斷風暴。svc 只會落在
+`lower_el_aarch64_sync` 這個入口，因此以向量入口判斷才安全。x86_64 沒有這個
+問題：系統呼叫是專屬的 IDT 向量 0x80，裝置中斷是向量 32 以上。
+
+On ARM64 the syscall test must be the exception vector entry, not `ESR_EL1`'s
+exception class alone: `ESR_EL1` is updated only on a synchronous exception and
+keeps its previous value when an IRQ arrives. The kernel keeps running after a
+process exits and goes on taking timer IRQs, so relying on `ESR` would let a
+stale SVC class make an IRQ look like a syscall that is never given an
+end-of-interrupt, wedging the machine in an interrupt storm. An svc only ever
+lands on the `lower_el_aarch64_sync` entry, so testing the vector entry is what
+is safe. x86_64 has no such issue: a syscall is the dedicated IDT vector 0x80
+and device interrupts are vectors 32 and above.
+
+### 檔案描述子 / File descriptors
+
+`shirley::process` 持有目前行程的檔案描述子表。進入程式前 `reset()` 把 0、1、2
+設成標準輸入、輸出、錯誤（都接主控台）；`open()` 開出來的描述子從 3 起算，
+背後是一個 VFS 描述子。`read`／`write` 依描述子分流到主控台或 VFS，`close`
+關掉它，行程結束時 `teardown()` 關掉還開著的描述子，避免共用的 VFS 描述子表
+外洩。一次只有一個行程，因此這是一份固定大小的靜態表；使用者指標在系統呼叫
+執行時仍然有效（核心也映射在同一個位址空間裡），因此直接取用，尚未加入
+copy-from-user 檢查。
+
+`shirley::process` holds the current process's file descriptor table. Before a
+program is entered, `reset()` sets 0, 1, and 2 to standard input, output, and
+error, all wired to the console; a descriptor from `open()` starts at 3 and is
+backed by a VFS descriptor. `read` and `write` route by descriptor to the
+console or the VFS, `close` releases one, and `teardown()` closes whatever is
+still open when the process exits so the shared VFS descriptor table does not
+leak. There is one process at a time, so this is a fixed-size static table; a
+user pointer is still valid while a syscall runs (the kernel is mapped in the
+same address space), so it is used directly and copy-from-user checks are not in
+yet.
+
+### 回到核心 / Returning to the kernel
+
+`arch::enter_userspace()` 不再是不返回的函式：它進入使用者模式之前先把核心的
+被呼叫者保存暫存器、堆疊指標、返回位址與中斷狀態存進一份 `UserContext`，然後
+才切到 EL0／ring 3。`exit` 系統呼叫呼叫 `arch::exit_userspace()`，它從那份
+`UserContext` 還原並返回，效果就像 setjmp／longjmp——`enter_userspace()` 那次
+呼叫以行程的結束碼作為回傳值返回。這樣 `user::launch()` 就會返回，位址空間隨
+之拆除，shell 於是再度取得提示符。
+
+`arch::enter_userspace()` is no longer a function that never returns: before
+entering user mode it saves the kernel's callee-saved registers, stack pointer,
+return address, and interrupt state into a `UserContext`, then switches to
+EL0/ring 3. The `exit` syscall calls `arch::exit_userspace()`, which restores
+from that `UserContext` and returns, in the manner of setjmp/longjmp: the
+`enter_userspace()` call returns with the process's exit status as its value.
+`user::launch()` therefore returns, its address space is torn down, and the
+shell gets its prompt back.
+
+兩個架構在細節上不同。x86_64 的系統呼叫由硬體從 TSS 載入 RSP0，因此用一個獨立
+的核心堆疊，避免處理常式覆寫保存在啟動行程那條呼叫鏈上的 `UserContext`；
+`launch()` 進入前把 CR3 換成程式的分頁表，返回後換回核心原本的 CR3，才拆除
+程式的位址空間。ARM64 的 EL1 不會在 EL0 例外時切換堆疊指標，因此系統呼叫自然
+接在該呼叫鏈之下，不需要另一個堆疊；核心開機時 MMU 尚未啟用，所以 `launch()`
+進入前用程式的轉換表啟用 MMU，返回後再關掉，回到無轉換的狀態，程式的轉換表
+才能安全釋放。
+
+The two architectures differ in the details. On x86_64 a syscall's RSP0 is
+loaded from the TSS by hardware, so it uses a separate kernel stack to keep a
+handler from overwriting the `UserContext` saved on the call chain that started
+the process; `launch()` switches CR3 to the program's page table before entering
+and back to the kernel's own on return before tearing the program's address
+space down. On ARM64, EL1 does not switch stack pointers on an exception from
+EL0, so a syscall naturally continues below that call chain and needs no second
+stack; the kernel boots with the MMU off, so `launch()` enables it with the
+program's translation table before entering and turns it off again on return,
+back to the no-translation state, so the table can be freed.
+
+尚未完成的部分：一次只有一個行程，沒有 fork／spawn 讓 user 程式自己啟動別的
+程式，沒有搶佔（程式跑到自己 exit 為止），沒有命令列引數或環境變數，也沒有
+每個行程自己的工作目錄——open 的路徑一律以根目錄為基準解析。
+
+Still missing: one process at a time, no fork/spawn for a user program to start
+another itself, no preemption (a program runs until it exits), no command-line
+arguments or environment, and no per-process working directory — an open path is
+always resolved against the root.
 
 ## 開機架構 / Boot architecture
 
@@ -1176,12 +1304,15 @@ that is really mounted, every character arrives through an interrupt, and with
 nothing to read the CPU waits for one. x86_64 has two input devices, the PS/2
 keyboard and the serial port; ARM64 has the PL011's receive path.
 
-尚未完成的是寫入、每個指令一個行程（因此 `hello` 之後回不到提示符），以及
-真正的磁碟驅動程式——根檔案系統目前住在核心映像裡。
+此里程碑時尚未完成的是寫入、讓指令以獨立行程執行後回到提示符，以及真正的
+磁碟驅動程式——根檔案系統目前住在核心映像裡。寫入在 M1.7 補上（裝置可寫，
+SHRFS1 仍唯讀），行程結束後回到提示符則在下面的 M3 補上。
 
-Still missing: write support, a process per command (which is why the prompt
-does not come back after `hello`), and a real disk driver — the root file
-system lives inside the kernel image for now.
+Missing at this milestone were write support, running a command as its own
+process that returns to the prompt, and a real disk driver — the root file
+system lives inside the kernel image for now. Writing landed in M1.7 (devices
+are writable, SHRFS1 is still read-only) and returning to the prompt after a
+process exits landed in M3 below.
 
 ### M1.6 — 裝置子系統 / device subsystem
 
@@ -1240,21 +1371,47 @@ real answer to that is demand paging rather than a bigger number. There is no
 `mkdir`, `unlink`, permissions, timestamps, or per-process working directory
 yet either.
 
+### M3 — 行程返回與系統呼叫 / process return and system calls
+
+user 程式的基礎補齊了。`exec`（與 `hello`）把一個程式當成 user 行程執行，程式
+呼叫 exit 系統呼叫之後控制權會回到 shell，提示符與結束碼一併出現，因此可以
+一個接一個地執行。原生系統呼叫 ABI 提供 `write`、`read`、`open`、`close`、
+`exit`；`shirley::process` 維護行程的檔案描述子表（0/1/2 接主控台，`open` 開的
+接 VFS），user 程式因此能自己走 VFS 讀檔。回到核心的路徑靠 `arch::enter_userspace`
+在進入前保存核心狀態、`arch::exit_userspace` 在 exit 時跳回去，就像
+setjmp／longjmp。詳見〈使用者程式與系統呼叫〉。
+
+The user-program foundation is complete. `exec` (and `hello`) runs a program as
+a user process, and after the program calls the exit syscall control returns to
+the shell with the prompt and exit status, so programs can be run one after
+another. The native syscall ABI provides `write`, `read`, `open`, `close`, and
+`exit`; `shirley::process` keeps the process's file descriptor table (0/1/2 to
+the console, `open`'s to the VFS), so a user program can read files through the
+VFS itself. The return-to-kernel path relies on `arch::enter_userspace` saving
+the kernel state before entering and `arch::exit_userspace` jumping back on exit,
+in the manner of setjmp/longjmp. See "User programs and system calls".
+
+尚未完成的是搶佔式排程、fork／spawn（一次只有一個行程，也還不能從 user 空間
+啟動另一個程式）、命令列引數與環境、每個行程自己的工作目錄，以及 IPC。
+
+Still missing are preemptive scheduling, fork/spawn (one process at a time, and
+a program cannot yet start another from userspace), command-line arguments and
+environment, a per-process working directory, and IPC.
+
 ### 後續規劃 / Roadmap
 
-M2 搶佔式排程與執行緒（兩種架構的中斷與計時器都已在 M0.5 完成）；M3 行程與
-IPC，讓指令能以 user 行程執行並回到提示符；M4 可寫入的檔案系統與 user 空間
-的 shell，以及把 VFS 接到 syscall 上，讓 user 程式自己也能 open／read／write；
+M2 搶佔式排程與執行緒（兩種架構的中斷與計時器都已在 M0.5 完成）；M3 的行程
+返回與系統呼叫已完成（見上），剩下的 fork／spawn 與 IPC 待補；M4 可寫入的
+檔案系統與 user 空間的 shell，以及把更多 VFS 動作接到 syscall 上；
 M5 PCI/VirtIO、儲存與 MSI/MSI-X；M6 網路；M7 實體 x86_64 PC 啟用與
 APIC/IOAPIC；M8 Apple Silicon 啟用；M9 GUI 與視窗系統。
 
 M2 preemptive scheduling and threads (interrupts and a timer landed on both
-architectures in M0.5); M3 processes and IPC, so a command can run as a user
-process and return to the prompt; M4 a writable file system, a shell in user
-space, and the VFS behind the syscall layer so a user program can open, read,
-and write for itself; M5 PCI/VirtIO, storage, and MSI/MSI-X;
-M6 networking; M7 physical x86_64 PC bring-up and APIC/IOAPIC; M8 Apple Silicon
-bring-up; M9 GUI/window system.
+architectures in M0.5); M3's process return and system calls are done (see
+above), with fork/spawn and IPC still to come; M4 a writable file system, a
+shell in user space, and more VFS actions behind the syscall layer; M5
+PCI/VirtIO, storage, and MSI/MSI-X; M6 networking; M7 physical x86_64 PC
+bring-up and APIC/IOAPIC; M8 Apple Silicon bring-up; M9 GUI/window system.
 
 ## 程式撰寫理念 / Coding philosophy
 

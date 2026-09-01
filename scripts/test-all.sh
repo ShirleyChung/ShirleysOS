@@ -316,22 +316,41 @@ if match is None:
 if int(match.group(2)) == 0:
     fail('The timer interrupt never arrived')
 
-# user 程式最後才跑：它會接管 CPU，之後 shell 不會再回來。它現在是檔案系統
-# 裡的一個檔案，因此先確認 /bin/hello 真的在那裡，再讓 exec 從那個路徑把它
-# 讀出來執行——整條路是 VFS 開檔、讀檔，然後交給 ELF loader。
+# user 程式最後才跑。它現在是檔案系統裡的一個檔案，因此先確認 /bin/hello 真的
+# 在那裡，再讓 exec 從那個路徑把它讀出來執行——整條路是 VFS 開檔、讀檔，然後
+# 交給 ELF loader。
 #
-# The user program runs last: it takes over the CPU and the shell does not come
-# back afterwards. It is a file in the file system now, so /bin/hello is first
-# confirmed to be there and then exec reads it from that path and runs it — the
-# whole way through is the VFS opening and reading a file and handing it to the
-# ELF loader.
+# The user program runs last. It is a file in the file system now, so /bin/hello
+# is first confirmed to be there and then exec reads it from that path and runs
+# it — the whole way through is the VFS opening and reading a file and handing it
+# to the ELF loader.
 answer = type_line('stat /bin/hello')
 expect(answer, '/bin/hello', 'stat /bin/hello')
 expect(answer, 'shrfs', 'stat /bin/hello')
 
-type_line('exec /bin/hello', settle=2.0)
-if not wait_for("Hello! Shirley's OS.", 5):
-    fail('The user program was not loaded from /bin/hello and run')
+# 程式問候之後，用 open/read/write/close 這組系統呼叫讀出 /etc/version，證明
+# user 程式自己走得到 VFS；接著它呼叫 exit，控制權回到 shell，提示符與結束碼
+# 一併出現。這條返回路徑是 M3 的核心：核心能執行一個程式、收尾、再回到啟動
+# 它的地方，而不是被程式接管到重開機。
+#
+# After greeting, the program reads /etc/version through the open/read/write/
+# close syscalls, proving a user program reaches the VFS itself; then it calls
+# exit and control returns to the shell, whose prompt and the exit status both
+# appear. This return path is the heart of M3: the kernel runs a program, tears
+# it down, and returns to what launched it rather than being taken over until a
+# reboot.
+answer = type_line('exec /bin/hello', settle=2.5)
+expect(answer, "Hello! Shirley's OS.", 'exec /bin/hello greeting')
+expect(answer, 'ShirleyOS', 'exec /bin/hello read /etc/version from userspace')
+expect(answer, 'exited with status 0', 'exec /bin/hello exit status')
+if answer.count(prompt) < 1:
+    fail('The shell prompt did not return after the program exited')
+
+# shell 還活著：程式結束後再跑一個指令，它必須照常回應。
+# The shell is still alive: run another command after the program exited and it
+# has to answer as usual.
+answer = type_line('pwd')
+expect(answer, '\n/', 'pwd after a user program exited')
 
 process.kill()
 reader.join(timeout=2)

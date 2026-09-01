@@ -47,7 +47,27 @@ void switch_address_space(AddressSpaceHandle);
 // 設定特權層轉換時要使用的核心堆疊頂端。
 // Set the kernel stack top used when a privilege-level transition occurs.
 void set_kernel_stack(std::uintptr_t stack_top);
-[[noreturn]] void enter_userspace(std::uintptr_t entry, std::uintptr_t user_stack);
+
+// 進入使用者模式執行 entry，直到該行程呼叫 exit 系統呼叫為止，並回傳它交出的
+// 結束碼。這是一個會返回的函式：進入前先保存核心的執行狀態，exit 時再從那裡
+// 接續，就像 setjmp/longjmp 那樣把控制權交回啟動它的核心程式碼。
+//
+// Enter user mode at entry and run until the process calls the exit syscall,
+// then return the status it handed back. This is a function that returns: the
+// kernel's execution state is saved before entering and resumed on exit, in
+// the manner of setjmp/longjmp, handing control back to the kernel code that
+// started the process.
+int enter_userspace(std::uintptr_t entry, std::uintptr_t user_stack);
+
+// 結束目前的使用者行程，讓對應的 enter_userspace() 以 status 作為回傳值返回。
+// 由 exit 系統呼叫在中斷／例外處理常式內呼叫，因此它不會返回呼叫端，而是跳回
+// 保存好的核心狀態。
+//
+// End the running user process, making the matching enter_userspace() return
+// status. Called by the exit syscall from inside the interrupt/exception
+// handler, so it does not return to its caller but longjmps back to the saved
+// kernel state.
+[[noreturn]] void exit_userspace(int status);
 
 // 註冊中斷向量處理常式；向量超出範圍或架構尚未支援時回傳 false。
 // 向量編號的意義由各架構定義，詳見 OS_SPEC.md。

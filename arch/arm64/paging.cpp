@@ -207,4 +207,31 @@ bool mmu_enable(std::uint64_t translation_table) {
     return true;
 }
 
+bool mmu_enabled() {
+    std::uint64_t control = 0;
+    asm volatile("mrs %0, sctlr_el1" : "=r"(control));
+    return (control & (1ull << 0)) != 0;
+}
+
+bool mmu_disable() {
+    // 清掉 M/C/I 三個位元，回到核心開機時 MMU 與快取皆關閉的狀態。核心以恆等
+    // 映射執行，關閉轉換後位址不變，因此可以在核心程式碼中途安全切換。真正
+    // 硬體上還需要在此清理快取，那與其他 Apple Silicon 啟用工作一起留到 M8；
+    // QEMU 的快取是一致的，這裡不需要。
+    //
+    // Clear the M/C/I bits, returning to the kernel's boot-time state with the
+    // MMU and caches off. The kernel runs identity-mapped, so disabling
+    // translation leaves addresses unchanged and this is safe to do partway
+    // through kernel code. Real hardware would also need cache maintenance
+    // here, deferred to M8 with the rest of Apple Silicon bring-up; QEMU's
+    // caches are coherent and need none.
+    std::uint64_t control = 0;
+    asm volatile("mrs %0, sctlr_el1" : "=r"(control));
+    control &= ~((1ull << 0) | (1ull << 2) | (1ull << 12));
+    asm volatile("dsb ish" : : : "memory");
+    asm volatile("msr sctlr_el1, %0; isb" : : "r"(control) : "memory");
+    asm volatile("tlbi vmalle1; dsb ish; isb" : : : "memory");
+    return true;
+}
+
 } // namespace shirley::arch::arm64

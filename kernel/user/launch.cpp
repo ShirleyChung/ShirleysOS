@@ -4,6 +4,7 @@
 #include "shirley/console.hpp"
 #include "shirley/memory.hpp"
 #include "shirley/platform.hpp"
+#include "shirley/process.hpp"
 #include "shirley/vfs.hpp"
 
 #if defined(SHIRLEY_ARCH_X86_64)
@@ -108,25 +109,33 @@ std::size_t read_image(const char* path) {
 
 } // namespace
 
-bool launch(const char* path) {
+bool launch(const char* path, int* status) {
     if (path == nullptr) return false;
     const auto size = read_image(path);
     if (size == 0) return false;
+    // 讓即將執行的程式一開始就有標準輸入／輸出／錯誤三個描述子。
+    // Give the program about to run its standard input/output/error descriptors
+    // from the outset.
+    process::reset();
 #if defined(SHIRLEY_ARCH_X86_64)
     arch::x86_64::PageTable address_space;
     if (!address_space.initialize() || !map_kernel(address_space) ||
         !map_platform_devices(address_space)) return false;
-    // Ring 3 -> Ring 0 interrupt entry loads RSP0 from the TSS. The BIOS
-    // entry path's kernel stack lives at 0x80000, outside the kernel image.
-    if (!address_space.map(0x80000, 0x80000, memory::PageFlags::Read |
-                                                     memory::PageFlags::Write |
-                                                     memory::PageFlags::Execute)) return false;
-    arch::set_kernel_stack(0x81000);
     Image image{};
     if (!load_elf(image_buffer, size, shirley::boot::elf_machine_x86_64, address_space, image))
         return false;
+    // 切到程式的位址空間執行它，行程 exit 後再切回核心原本的位址空間，這樣
+    // 接下來拆除 address_space 就不會動到仍在使用中的分頁表。
+    //
+    // Switch to the program's address space to run it, and switch back to the
+    // kernel's own once the process exits, so tearing down address_space next
+    // does not touch a page table still in use.
+    const auto kernel_space = arch::current_address_space();
     arch::switch_address_space(address_space.root());
-    arch::enter_userspace(image.entry, image.stack);
+    const int code = arch::enter_userspace(image.entry, image.stack);
+    arch::switch_address_space(kernel_space);
+    if (status != nullptr) *status = code;
+    return true;
 #elif defined(SHIRLEY_ARCH_ARM64)
     arch::arm64::PageTable address_space;
     if (!address_space.initialize() || !map_kernel(address_space) ||
@@ -134,8 +143,17 @@ bool launch(const char* path) {
     Image image{};
     if (!load_elf(image_buffer, size, shirley::boot::elf_machine_aarch64, address_space, image))
         return false;
+    // 核心開機時 MMU 尚未啟用，因此這裡打開它並指向程式的轉換表；行程 exit
+    // 後再關掉 MMU，回到核心無轉換的狀態，剛才的轉換表才能安全釋放。
+    //
+    // The kernel boots with the MMU off, so enable it here pointed at the
+    // program's translation table; turn it off again once the process exits,
+    // back to the kernel's no-translation state, so that table can be freed.
     if (!arch::arm64::mmu_enable(address_space.root())) return false;
-    arch::enter_userspace(image.entry, image.stack);
+    const int code = arch::enter_userspace(image.entry, image.stack);
+    arch::arm64::mmu_disable();
+    if (status != nullptr) *status = code;
+    return true;
 #else
     (void)size;
     return false;
