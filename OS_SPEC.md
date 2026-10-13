@@ -565,12 +565,12 @@ the reason rather than a boolean — a name collision is a programming error
 while a full table is a configuration one, and a driver should react
 differently to each.
 
-裝置物件屬於驅動程式，註冊表只保存指標，不配置也不釋放任何東西。核心還沒有
-動態配置器，而驅動程式的生命週期本來就和它的硬體一樣長。
+裝置物件屬於驅動程式，註冊表只保存指標，不配置也不釋放任何東西：驅動程式的
+生命週期本來就和它的硬體一樣長，用不著堆積。
 
 A device object belongs to its driver; the registry stores a pointer and
-neither allocates nor frees. The kernel has no dynamic allocator yet, and a
-driver lives exactly as long as its hardware does.
+neither allocates nor frees: a driver lives exactly as long as its hardware
+does and has no use for the heap.
 
 這裡刻意不是 Linux 的 driver model：沒有 bus、沒有 class、沒有 major/minor
 編號。名字就是識別碼。等到真的需要熱插拔或裝置樹列舉時再談。
@@ -693,7 +693,7 @@ Applications
 libc / POSIX Compatibility
 ShirleyOS Native ABI
 Generic Kernel
-VFS (shrfs, devfs)
+VFS (shrfs, exfat, devfs)
 Console / Device Registry
 Architecture Abstraction
 Platform Abstraction
@@ -726,13 +726,17 @@ but the device abstraction. Couplings such as `keyboard IRQ → shell` or
 核心是 freestanding 的。`kernel/freestanding/` 提供核心實際用到的標準標頭檔
 最小子集，`kernel/runtime/` 則提供編譯器會隱含產生呼叫的常式（`memset`、
 `memcpy`、`memmove`、`memcmp`、`operator delete`、`__cxa_pure_virtual`）。
-核心沒有堆積，因此每個 `operator delete` 都直接停住處理器，而不是假裝完成釋放。
+核心堆積（見〈核心堆積〉）只提供明確的 `heap::allocate()`／`heap::free()`，沒有
+`operator new`，因此每個 `operator delete` 仍然直接停住處理器，而不是假裝完成
+釋放。
 
 The kernel is freestanding. `kernel/freestanding/` supplies the minimal subset
 of standard headers the kernel actually uses, and `kernel/runtime/` supplies
 the routines the compiler emits implicitly (`memset`, `memcpy`, `memmove`,
-`memcmp`, `operator delete`, `__cxa_pure_virtual`). There is no heap, so every
-`operator delete` stops the processor instead of pretending to free memory.
+`memcmp`, `operator delete`, `__cxa_pure_virtual`). The kernel heap (see "The
+kernel heap") offers only explicit `heap::allocate()` and `heap::free()`, with
+no `operator new`, so every `operator delete` still stops the processor instead
+of pretending to free memory.
 
 核心以 `-fno-threadsafe-statics` 編譯。函式內的 static 物件預設會產生
 `__cxa_guard_*` 呼叫，那是 libstdc++ 的執行期常式，裸機核心沒有可連結的
@@ -745,6 +749,38 @@ freestanding kernel has nothing to link against. The kernel runs on a single
 core today, so no other thread can race the first initialization and dropping
 the guard is safe; that assumption has to be revisited when a second core
 appears.
+
+## 核心堆積 / The kernel heap
+
+`shirley::heap` 在一段呼叫端交給它的記憶體上做可變大小的配置：依位址排序的
+空閒串列加上首次適配，配置時切開第一個放得下的區塊，釋放時與前後相鄰的空閒
+區塊合併。對齊可以指定（2 的次方，至少 16 位元組）。釋放一個不是堆積給出的
+指標、或重複釋放，都被忽略而不是破壞空閒串列，與 `memory::free_page()` 的
+作法一致；`heap::consistent()` 檢查整個堆積仍然被區塊剛好鋪滿。
+
+核心把堆積放在 `.bss` 裡一塊 1 MiB 的固定區域，而不是向頁面配置器要頁面：
+ARM64 的行程位址空間只映射核心映像，user 行程執行期間的系統呼叫碰不到映像
+以外的頁面，而 `.bss` 永遠在映像之內。x86_64 BIOS 目標因此把 `.bss` 連結在
+8 MiB（見〈開機架構〉）。堆積沒有 `operator new`；需要動態記憶體的元件明確呼叫
+`heap::allocate()`／`heap::free()`，並且在建構時不配置任何東西，物件因此仍然
+可以是 `constinit`。
+
+`shirley::heap` hands out variable-sized allocations from memory the caller
+gives it: an address-ordered free list with first fit, splitting the first
+block large enough on allocation and merging with free neighbours on free.
+Alignment can be requested (a power of two, at least 16 bytes). Freeing a
+pointer the heap never handed out, or freeing twice, is ignored rather than
+corrupting the free list, just as `memory::free_page()` behaves;
+`heap::consistent()` checks that the blocks still tile the heap exactly.
+
+The kernel places the heap on a fixed 1 MiB region in `.bss` instead of taking
+pages from the page allocator: an ARM64 process address space maps only the
+kernel image, so a syscall made while a user process runs cannot reach a page
+outside it, whereas `.bss` always lies inside the image. That is why the
+x86_64 BIOS target links `.bss` at 8 MiB (see "Boot architecture"). There is
+no `operator new`; a component that needs dynamic memory calls
+`heap::allocate()` and `heap::free()` explicitly and allocates nothing at
+construction, so its objects can still be `constinit`.
 
 ## 虛擬檔案系統 / The virtual file system
 
@@ -813,15 +849,23 @@ partly overwritten is read back first and then written whole, or the other
 bytes in it would be zeroed. `block_read()` and `block_write()` name sectors
 directly and ignore the position, which is the path a file system driver takes.
 
-掛載表最多 4 個掛載點，描述子表最多 16 個開啟的檔案，都是固定大小的表：核心
-沒有動態配置器，而目前的用量離上限還很遠。第一個掛載必須是 `/`，否則之後的
-路徑解析沒有起點；還有檔案開在上面的檔案系統不能卸載。
+掛載表最多 4 個掛載點，描述子表最多 16 個開啟的檔案，都是固定大小的表：那是
+VFS 自己的狀態，用不著堆積，而目前的用量離上限還很遠。第一個掛載必須是 `/`，
+否則之後的路徑解析沒有起點；還有檔案開在上面的檔案系統不能卸載。
+
+名稱上限 255 個 UTF-8 位元組（與 ext4 及 Linux 的 NAME_MAX 相同），路徑上限 512
+個位元組；超過都是明確的失敗而不是截斷。個別檔案系統可以更嚴格，SHRFS1 仍然
+只到 55 個位元組。
 
 The mount table holds at most four mounts and the descriptor table at most
-sixteen open files, both fixed: the kernel has no dynamic allocator and today's
-usage is nowhere near either. The first mount has to be `/`, or later
-resolution has nowhere to start, and a file system with open files cannot be
-unmounted.
+sixteen open files, both fixed: they are the VFS's own state, with no use for
+the heap, and today's usage is nowhere near either. The first mount has to be
+`/`, or later resolution has nowhere to start, and a file system with open
+files cannot be unmounted.
+
+A name is at most 255 UTF-8 bytes (Linux's NAME_MAX, and ext4's limit) and a
+path at most 512 bytes; passing either is an explicit failure rather than a
+truncation. A file system may be stricter: SHRFS1 still stops at 55 bytes.
 
 ## 檔案系統 / File system
 
@@ -904,6 +948,93 @@ how the shell resolves a relative path. A name is at most 55 bytes, a path 128
 bytes, and nesting 16 levels deep; passing any of those is an explicit failure
 rather than a truncation.
 
+### 區塊快取 / The block cache
+
+`io::BlockCache` 把最近用過的區塊留在從堆積配置的緩衝區裡，寫入先留在快取，
+等 `sync()` 或區塊被擠出去時才寫回（write-back，擠出最久沒用的那一塊）。它本身
+也是一個 `io::BlockDevice`，所以檔案系統不必知道它存在：SHRFS 掛在快取上與掛在
+RAM disk 上讀到同樣的位元組。需要就地修改區塊的檔案系統用 `acquire()`／
+`release()`，被取得的區塊在放開之前不會被擠出。快取區塊可以是裝置區塊的整數倍，
+4 KiB 的檔案系統區塊架在 512 位元組的磁碟上，換算只在這裡做一次。寫回失敗時資料
+留在快取裡並回報錯誤，`shutdown()` 也不會在還有資料沒寫回時釋放緩衝區。同一個
+裝置只應該經過一個快取存取。
+
+`io::BlockCache` keeps recently used blocks in buffers taken from the heap.
+A write stays in the cache until `sync()` or until the block is evicted
+(write-back, evicting the least recently used block). It is an
+`io::BlockDevice` itself, so a file system need not know it is there: SHRFS
+mounted on the cache reads the same bytes as SHRFS mounted on the RAM disk. A
+file system that edits blocks in place uses `acquire()` and `release()`, and an
+acquired block cannot be evicted until it is released. A cached block may be a
+whole multiple of the device block, so 4 KiB file system blocks sit on a
+512-byte disk with the conversion done once, here. A failed write-back keeps
+the data in the cache and reports the error, and `shutdown()` will not free
+buffers that still hold unwritten data. A device should be reached through one
+cache only.
+
+### exFAT
+
+`exfat::Volume` 依照 Microsoft 公開的 exFAT 規格實作，目前唯讀。它是一個物件，
+每個卷冊一個實例，因此可以同時掛載好幾個；所有存取都經過 `io::BlockDevice`。
+掛載時驗證開機磁區（含 11 個磁區的開機校驗和）、沿著 FAT 算出根目錄長度、找到
+配置位元圖，並載入、驗證、展開大寫表（65536 項，從堆積配置）。檔案可以是連續
+配置（NoFatChain，不經 FAT）或靠 FAT 串接；`ValidDataLength` 之後的位元組讀成零。
+名稱是 UTF-16，經過卷冊自己的大寫表不分大小寫比對，先比 Stream Extension 裡的
+名稱雜湊。校驗和錯誤、雜湊不符或名稱含非法字元（包括 `/`、`.`、`..`）的項目組被
+跳過，一組壞掉的項目不會讓整個目錄讀不了。FAT 走訪的步數受叢集總數限制，FAT
+串成環也一定會結束。
+
+節點識別碼不包含檔案自己的叢集與長度，而是記錄項目組的位置：父目錄的第一個
+叢集、父目錄是否連續配置，以及項目組在父目錄中的位置。每次存取都從項目重新
+讀出，識別碼因此不可能和磁碟上的內容不一致；跨越叢集邊界的項目組也照樣讀得到。
+
+`exfat::Volume` is implemented from Microsoft's published exFAT
+specification and is read-only for now. It is an object, one instance per
+volume, so several can be mounted at once, and every access goes through
+`io::BlockDevice`. Mounting validates the boot sector (with the 11-sector boot
+checksum), walks the FAT to learn the root directory's length, finds the
+allocation bitmap, and loads, checks and expands the up-case table (65536
+entries, from the heap). A file is either contiguous (NoFatChain, bypassing
+the FAT) or chained through the FAT; bytes past `ValidDataLength` read as zero.
+Names are UTF-16 and compare case-insensitively through the volume's own
+up-case table, the Stream Extension's name hash first. Entry sets with a bad
+checksum, a hash that disagrees, or an illegal name (including `/`, `.` and
+`..`) are skipped, so one damaged set does not make a directory unreadable. A
+FAT walk is bounded by the cluster count, so even a FAT chained into a loop
+ends.
+
+A node identifier carries not the file's own clusters and length but where its
+entry set lives: the parent's first cluster, whether the parent is contiguous,
+and the set's slot in the parent. Every access reads the entries afresh, so an
+identifier cannot disagree with the disk, and a set that straddles a cluster
+boundary is read like any other.
+
+UTF-16 與 UTF-8 的轉換在 `text::utf16_to_utf8()`／`utf8_to_utf16()`。磁碟上落單
+的代理字元以 WTF-8 的方式編碼，兩個方向互為反函數，列得出來的名稱一定查得回去。
+
+Conversion between UTF-16 and UTF-8 lives in `text::utf16_to_utf8()` and
+`utf8_to_utf16()`. A lone surrogate on disk is encoded the WTF-8 way, so the
+two directions are exact inverses and a name that lists always looks up again.
+
+### 掛載裝置 / Mounting a device
+
+`fs::mount_device()` 把裝置註冊表裡的區塊裝置掛進 VFS：devfs 找到裝置，中間放
+一個 64 個區塊的 `io::BlockCache`，再掛上 `exfat::Volume`。每個掛載有自己的快取
+與檔案系統實例，存在一張最多兩項的固定表；`fs::unmount_device()` 在還有檔案開著
+時拒絕卸載，卸載之後把堆積還回去。shell 的 `mount <裝置> <路徑>` 與 `umount
+<路徑>` 走的就是這條路。目前沒有真正的磁碟驅動程式，能掛的區塊裝置只有 `ram0`
+（那是 SHRFS1，會被回報為不是 exFAT）；virtio-blk 等驅動程式在 M5 加入。
+
+`fs::mount_device()` mounts a block device from the device registry into the
+VFS: devfs finds the device, a 64-block `io::BlockCache` goes in between, and
+an `exfat::Volume` is mounted on it. Each mount has its own cache and file
+system instance, kept in a fixed table of two; `fs::unmount_device()` refuses
+while files are open and returns the heap once unmounted. The shell's
+`mount <device> <path>` and `umount <path>` take exactly this path. There is no
+real disk driver yet, so the only block device to mount is `ram0`, which holds
+SHRFS1 and is reported as not exFAT; virtio-blk and other drivers arrive in
+M5.
+
 ## 主控台 Shell / The console shell
 
 `shirley::shell::run()` 是核心啟動流程的最後一步，不會返回：開機之後，機器
@@ -936,13 +1067,15 @@ the prompt. Both newline and carriage return end a line, because the keyboard
 driver decodes one and a serial terminal sends the other.
 
 指令有 `help`、`ls`、`cat`、`cd`、`pwd`、`stat`、`echo`、`mem`、`uptime`、
-`version`、`clear`、`hello`、`reboot` 與 `poweroff`。`cd` 儲存的是由項目本身
+`devices`、`mount`、`umount`、`blk`、`exec`、`version`、`clear`、`hello`、
+`reboot` 與 `poweroff`。`cd` 儲存的是由項目本身
 組回來的絕對路徑，因此提示符顯示的永遠是正規化過的路徑，而不是使用者打進來
 的那串 `../..`。沒有輸入裝置的平台（例如 apple_silicon）不會顯示提示符：
 那只會騙人，因為永遠不會有字元進來。
 
 The commands are `help`, `ls`, `cat`, `cd`, `pwd`, `stat`, `echo`, `mem`,
-`uptime`, `version`, `clear`, `hello`, `reboot`, and `poweroff`. `cd` stores
+`uptime`, `devices`, `mount`, `umount`, `blk`, `exec`, `version`, `clear`,
+`hello`, `reboot`, and `poweroff`. `cd` stores
 the absolute path rebuilt from the entry itself, so the prompt always shows a
 normalized path rather than the `../..` that was typed. A platform with no
 input device, such as apple_silicon, gets no prompt: it would only lie, because
@@ -1093,10 +1226,13 @@ Milestone M0 permits direct QEMU kernel loading for rapid development.
   `platform/qemu_arm64` 會讀取其 `/memory` 節點與記憶體保留區塊。
 * x86_64 使用 `arch/x86_64/boot.S` 中 512 位元組的 BIOS 開機磁區。它會收集
   E820 記憶體地圖、讀入核心、以 2 MiB 分頁對前 1 GiB 建立 identity mapping、
-  進入長模式，然後以 `RDI` 帶著記憶體地圖位址跳進核心。核心分四次 BIOS 讀取
-  載入，每次 64 個磁區共 128 KiB：單次讀取的磁區數有上限，緩衝區也不能跨越
-  64 KiB 邊界。CMake 的 `--pad-to` 與映像大小檢查必須跟 `boot.S` 的
-  `sectors_per_read` 與 `kernel_reads` 一致，否則核心會被靜默截斷。
+  進入長模式，然後以 `RDI` 帶著記憶體地圖位址跳進核心。核心分八次 BIOS 讀取
+  載入，每次 64 個磁區共 256 KiB，落在 0x10000 到 0x50000：單次讀取的磁區數有
+  上限，緩衝區也不能跨越 64 KiB 邊界。CMake 的 `--pad-to` 與映像大小檢查必須跟
+  `boot.S` 的 `sectors_per_read` 與 `kernel_reads` 一致，否則核心會被靜默截斷。
+  `.bss`（含核心堆積）連結在 8 MiB：0x9FC00 以上是 EBDA、VGA 與 BIOS ROM，而
+  user 程式的虛擬位址在 0x1000 到 0x800000；0 到 `__kernel_end` 整段被保留，頁面
+  配置器因此不會交出一個實體位址與 user 映像重疊的頁面。
 * Apple Silicon 預期 `x0` 指向 Apple 的 `boot_args` 結構，與 iBoot 和 m1n1
   使用的契約相同。
 
@@ -1106,11 +1242,16 @@ Milestone M0 permits direct QEMU kernel loading for rapid development.
 * x86_64 uses a 512-byte BIOS boot sector in `arch/x86_64/boot.S`. It collects
   the E820 memory map, reads the kernel, identity-maps the first 1 GiB with
   2 MiB pages, enters long mode, and jumps to the kernel with the memory map
-  address in `RDI`. The kernel arrives in four BIOS reads of 64 sectors each,
-  128 KiB in total: a single read can only move so many sectors and its buffer
-  must not cross a 64 KiB boundary. CMake's `--pad-to` and image size check
-  must agree with `sectors_per_read` and `kernel_reads` in `boot.S`, or the
-  kernel is silently truncated.
+  address in `RDI`. The kernel arrives in eight BIOS reads of 64 sectors each,
+  256 KiB in total between 0x10000 and 0x50000: a single read can only move so
+  many sectors and its buffer must not cross a 64 KiB boundary. CMake's
+  `--pad-to` and image size check must agree with `sectors_per_read` and
+  `kernel_reads` in `boot.S`, or the kernel is silently truncated. `.bss`
+  (the kernel heap included) is linked at 8 MiB: the EBDA, VGA memory and the
+  BIOS ROM sit above 0x9FC00, and user programs live at virtual addresses
+  0x1000 to 0x800000. Everything from 0 to `__kernel_end` is reserved, so the
+  page allocator never hands out a page whose physical address overlaps the
+  user image.
 * Apple Silicon expects `x0` to hold an Apple `boot_args` structure, the same
   contract iBoot and m1n1 use.
 
@@ -1397,6 +1538,34 @@ in the manner of setjmp/longjmp. See "User programs and system calls".
 Still missing are preemptive scheduling, fork/spawn (one process at a time, and
 a program cannot yet start another from userspace), command-line arguments and
 environment, a per-process working directory, and IPC.
+
+### M4.1 — 核心堆積、區塊快取與 exFAT / kernel heap, block cache, and exFAT
+
+核心有了堆積（`.bss` 裡的 1 MiB）與 write-back 的區塊快取，並且能讀 exFAT：
+`mount /dev/<裝置> /mnt` 把區塊裝置上的 exFAT 卷冊經過快取掛進 VFS，`umount`
+卸載。VFS 的名稱上限放寬到 255 位元組、路徑到 512 位元組，以容納 exFAT 的長
+檔名。主機測試以 `tools/make-exfat-image.py` 依規格產生的映像涵蓋連續與 FAT
+串接的檔案、跨叢集的項目組、ValidDataLength、長的中文名稱與各種壞掉的項目；
+讀取端也以 exfatprogs 的 mkfs.exfat 產生的映像驗證過。整體規劃見
+`docs/FILESYSTEM_SUPPORT_PLAN.md`。
+
+尚未完成的是 exFAT 寫入、ext4 與 NTFS、MBR／GPT 分割表，以及真正的磁碟驅動
+程式——目前沒有任何真正的 exFAT 裝置可掛，這要等 M5 的 virtio-blk。
+
+The kernel gains a heap (1 MiB in `.bss`) and a write-back block cache, and it
+reads exFAT: `mount /dev/<device> /mnt` mounts the exFAT volume on a block
+device into the VFS through the cache, and `umount` removes it. The VFS name
+limit grows to 255 bytes and the path limit to 512 to hold exFAT's long names.
+The host tests run against an image `tools/make-exfat-image.py` writes from the
+specification, covering contiguous and FAT-chained files, an entry set
+straddling clusters, ValidDataLength, a long Chinese name, and damaged entries
+of several kinds; the reader has also been checked against images made by
+exfatprogs' mkfs.exfat. The overall plan is in
+`docs/FILESYSTEM_SUPPORT_PLAN.md`.
+
+Still missing: exFAT writing, ext4 and NTFS, MBR/GPT partition tables, and a
+real disk driver — there is no real exFAT device to mount until M5 brings
+virtio-blk.
 
 ### 後續規劃 / Roadmap
 

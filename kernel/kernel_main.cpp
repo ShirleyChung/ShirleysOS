@@ -4,6 +4,7 @@
 #include "shirley/device.hpp"
 #include "shirley/format.hpp"
 #include "shirley/fs.hpp"
+#include "shirley/heap.hpp"
 #include "shirley/io.hpp"
 #include "shirley/irq.hpp"
 #include "shirley/memory.hpp"
@@ -19,6 +20,20 @@ namespace {
 // 開機載入器未提供啟動資訊時使用的空白描述。
 // Stands in when the boot loader supplied no boot information.
 constexpr shirley::BootInfo empty_boot_info{};
+
+// 核心堆積所在的區域。它放在 .bss 而不是向頁面配置器要頁面，因為 ARM64 的
+// 行程位址空間只映射核心映像：user 行程執行期間的系統呼叫碰不到映像以外的
+// 頁面。.bss 不佔核心映像檔的任何位元組。1 MiB 夠同時掛兩個 exFAT 卷冊：
+// 每個用掉一份大寫表（128 KiB）與一份區塊快取（32 KiB）。
+//
+// Where the kernel heap lives. It sits in .bss rather than taking pages from
+// the page allocator because an ARM64 process address space maps only the
+// kernel image: a syscall made while a user process runs cannot reach a page
+// outside it. .bss takes no bytes of the kernel image file. 1 MiB is enough
+// for two exFAT volumes mounted at once, each taking an up-case table
+// (128 KiB) and a block cache (32 KiB).
+constexpr std::size_t heap_bytes = 1024 * 1024;
+alignas(4096) unsigned char heap_region[heap_bytes];
 
 void write_field(const char* label, const char* value) {
     shirley::console::write(label);
@@ -77,6 +92,7 @@ extern "C" [[noreturn]] void kernel_main(const shirley::BootInfo* boot_info) {
     shirley::irq::initialize();
     shirley::platform::initialize(info);
     shirley::memory::initialize(info);
+    shirley::heap::initialize(heap_region, sizeof(heap_region));
     shirley::scheduler::initialize();
 
     shirley::console::write("ShirleyOS booting...\n");
@@ -90,6 +106,7 @@ extern "C" [[noreturn]] void kernel_main(const shirley::BootInfo* boot_info) {
                     (1024 * 1024),
                 " MiB\n");
     write_count("Free pages: ", shirley::memory::free_pages(), "\n");
+    write_count("Heap: ", shirley::heap::capacity() / 1024, " KiB\n");
 
     // 中斷向量已就緒，平台中斷控制器也只解除了已註冊驅動程式的那幾條線，
     // 因此在這裡開啟中斷是安全的。

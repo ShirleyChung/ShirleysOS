@@ -3,8 +3,10 @@
 #include "shirley/arch.hpp"
 #include "shirley/console.hpp"
 #include "shirley/device.hpp"
+#include "shirley/device_mount.hpp"
 #include "shirley/format.hpp"
 #include "shirley/fs.hpp"
+#include "shirley/heap.hpp"
 #include "shirley/io.hpp"
 #include "shirley/memory.hpp"
 #include "shirley/platform.hpp"
@@ -178,10 +180,11 @@ void command_help() {
     write_line("  pwd               print the working directory");
     write_line("  stat <path>       show one entry's details");
     write_line("  echo [text] [> p] print the arguments, or write them to a path");
-    write_line("  mem               page allocator totals");
+    write_line("  mem               page allocator and heap totals");
     write_line("  uptime            time since boot, counted in timer interrupts");
     write_line("  devices           list the registered devices");
-    write_line("  mount             list the mounted file systems");
+    write_line("  mount [dev path]  list mounts, or mount an exFAT device at a path");
+    write_line("  umount <path>     unmount a device mounted with mount");
     write_line("  blk <dev> <n>     dump block n of a block device, such as /dev/ram0");
     write_line("  version           kernel, architecture, and platform");
     write_line("  clear             clear the screen");
@@ -339,11 +342,26 @@ void command_stat() {
 }
 
 // 目前掛了哪些檔案系統。這是 VFS 唯一的狀態，看得到它才知道一個路徑會被
-// 誰回答。
+// 誰回答。給了裝置與路徑時，則把那個裝置上的檔案系統掛上去。
 //
 // Which file systems are mounted. This is the VFS's only state, and seeing it
-// is what tells you who will answer for a given path.
+// is what tells you who will answer for a given path. Given a device and a
+// path, it mounts the file system on that device instead.
 void command_mount() {
+    if (argument_count == 2) {
+        write_line("mount: needs a device and a path, or nothing");
+        return;
+    }
+    if (argument_count >= 3) {
+        const char* failure = fs::mount_device(arguments[1], arguments[2], working_directory);
+        if (failure != nullptr) {
+            write("mount: ");
+            write(arguments[1]);
+            write(": ");
+            write_line(failure);
+        }
+        return;
+    }
     for (std::size_t index = 0; index < vfs::mount_count(); ++index) {
         write("  ");
         const char* path = vfs::mount_path(index);
@@ -351,6 +369,20 @@ void command_mount() {
         for (auto column = text::length(path); column < 10; ++column) write(" ");
         auto* filesystem = vfs::mount_filesystem(index);
         write_line(filesystem != nullptr ? filesystem->name() : "none");
+    }
+}
+
+void command_umount() {
+    if (argument_count < 2) {
+        write_line("umount: needs a path");
+        return;
+    }
+    const char* failure = fs::unmount_device(arguments[1], working_directory);
+    if (failure != nullptr) {
+        write("umount: ");
+        write(arguments[1]);
+        write(": ");
+        write_line(failure);
     }
 }
 
@@ -424,6 +456,11 @@ void command_mem() {
     write(" pages, ");
     write_number(static_cast<std::uint64_t>(memory::free_pages()) * memory::page_size / (1024 * 1024));
     write_line(" MiB");
+    write("  heap        ");
+    write_number(heap::available() / 1024);
+    write(" of ");
+    write_number(heap::capacity() / 1024);
+    write_line(" KiB free");
 }
 
 void command_uptime() {
@@ -646,6 +683,7 @@ void execute() {
     if (text::equals(command, "uptime")) return command_uptime();
     if (text::equals(command, "devices")) return command_devices();
     if (text::equals(command, "mount")) return command_mount();
+    if (text::equals(command, "umount")) return command_umount();
     if (text::equals(command, "blk")) return command_blk();
     if (text::equals(command, "exec")) return command_exec();
     if (text::equals(command, "version")) return command_version();

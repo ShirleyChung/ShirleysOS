@@ -256,6 +256,7 @@ device registry + VFS + shell + user programs
 | --- | --- | --- |
 | `README.md` | generic memory management 說明。 | memory doc。 |
 | `page_allocator.cpp` | 根據 `BootInfo` 管理 physical page extents，配置/釋放 4 KiB page。 | physical memory allocator。 |
+| `heap.cpp` | `.bss` 中 1 MiB 區域上的 first-fit 堆積，`allocate`/`free`，支援對齊與合併。 | kernel heap。 |
 
 ### `kernel/interrupt/`
 
@@ -273,12 +274,15 @@ device registry + VFS + shell + user programs
 | `shrfs.cpp` | SHRFS1 image mount 與低階 read/list/walk。 | read-only root filesystem driver。 |
 | `shrfs_vfs.cpp` | 把 SHRFS1 expose 成 `vfs::FileSystem`。 | filesystem-to-VFS adapter。 |
 | `devfs.cpp` | 把 device registry expose 成 `/dev`。 | device namespace filesystem。 |
+| `exfat.cpp` | 唯讀 exFAT：boot checksum、FAT/NoFatChain、entry set、大寫表、不分大小寫查找。 | exFAT filesystem driver。 |
+| `device_mount.cpp` | `mount_device`/`unmount_device`：device → `BlockCache` → `exfat::Volume` → VFS。 | runtime volume mounting。 |
 | `rootfs_mount.cpp` | 將建置生成的 rootfs image 包成 RAM disk，掛載並註冊 `ram0`。 | early root storage bring-up。 |
 
 ### `kernel/io/`
 
 | 檔案 | 作用 | 架構地位 |
 | --- | --- | --- |
+| `block_cache.cpp` | write-back LRU 區塊快取，本身也是 `BlockDevice`，提供 acquire/release。 | block layer cache。 |
 | `console_stream.cpp` | 把 console 包成 `ByteStream`，連到 stdout/stderr。 | standard stream backend。 |
 | `input_queue.cpp` | interrupt handler 與消費者之間的 bounded ring buffer。 | input buffering primitive。 |
 | `standard_streams.cpp` | 管理 kernel standard input/output/error 指標。 | generic stdio-like routing。 |
@@ -298,6 +302,7 @@ device registry + VFS + shell + user programs
 | `kernel/format/number.cpp` | bounded decimal/hex formatting。 | diagnostics utility。 |
 | `kernel/text/README.md` | bounded string helpers 設計。 | utility doc。 |
 | `kernel/text/string.cpp` | `length`、`equals`、`copy`、`append`。 | freestanding string utility。 |
+| `kernel/text/utf.cpp` | UTF-16 ↔ UTF-8（落單代理字元以 WTF-8 編碼）。 | filename encoding utility。 |
 | `kernel/runtime/README.md` | compiler runtime 支援說明。 | runtime doc。 |
 | `kernel/runtime/compiler_runtime.cpp` | `memcpy`、`memset`、`memmove`、`memcmp`、delete/pure virtual traps。 | kernel compiler runtime。 |
 | `kernel/freestanding/cstddef` | freestanding `<cstddef>` shim。 | libc-free header shim。 |
@@ -477,12 +482,17 @@ device registry + VFS + shell + user programs
 | `device_smoke.cpp` | 測 device registry、failure cases、console input multiplexing。 | device contract test。 |
 | `vfs_smoke.cpp` | 測 path normalization、mount table、open/read/write/seek/close、devfs、block read。 | VFS contract test。 |
 | `file_system_smoke.cpp` | 測 text helpers 與 rootfs SHRFS image mount/walk/list/read。 | filesystem contract test。 |
+| `heap_smoke.cpp` | 測 heap 配置、對齊、合併、錯誤釋放與碎片化。 | heap contract test。 |
+| `block_cache_smoke.cpp` | 測快取命中、write-back、LRU、pin、錯誤處理，以及 SHRFS 經過快取掛載。 | block cache test。 |
+| `exfat_smoke.cpp` | 以 `tests/images/exfat-basic.img` 測 exFAT 掛載、查找、讀取、損壞拒絕與 `mount_device`。 | exFAT contract test。 |
+| `images/exfat-basic.img` | `tools/make-exfat-image.py` 依規格產生的 1 MiB exFAT 測試映像。 | test fixture。 |
 
 ## `docs/`
 
 | 檔案 | 作用 | 架構地位 |
 | --- | --- | --- |
 | `architecture.md` | 簡短說明 `arch`、`platform`、`drivers`、`device`、`console`、`fs` 的單向依賴。 | architecture boundary note。 |
+| `FILESYSTEM_SUPPORT_PLAN.md` | exFAT、ext4、NTFS 支援的分階段計劃與進度。 | filesystem roadmap。 |
 
 ## 目前可延伸的方向
 

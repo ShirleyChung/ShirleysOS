@@ -16,16 +16,18 @@
 #   0xb000  PD (512 x 2 MiB pages, covering the first 1 GiB)
 #   0x10000 kernel image
 
-# 每次讀 64 個磁區（32 KiB），共讀 kernel_reads 次，也就是 128 KiB 的核心
-# 映像。CMake 的 --pad-to 與映像大小檢查必須與這兩個常數一致，否則核心會被
-# 靜默截斷。每一段都落在 32 KiB 對齊的位址上，因此不可能跨越 64 KiB 邊界。
+# 每次讀 64 個磁區（32 KiB），共讀 kernel_reads 次，也就是 256 KiB 的核心
+# 映像，落在 0x10000 到 0x50000 之間，離 0x9FC00 的 EBDA 還很遠。CMake 的
+# --pad-to 與映像大小檢查必須與這兩個常數一致，否則核心會被靜默截斷。每一段
+# 都落在 32 KiB 對齊的位址上，因此不可能跨越 64 KiB 邊界。
 #
 # Each read moves 64 sectors (32 KiB), and there are kernel_reads of them, so
-# 128 KiB of kernel image in total. CMake's --pad-to and image size check must
+# 256 KiB of kernel image in total, landing between 0x10000 and 0x50000 and
+# well clear of the EBDA at 0x9FC00. CMake's --pad-to and image size check must
 # agree with these two constants or the kernel is silently truncated. Every
 # chunk lands on a 32 KiB aligned address, so none can cross a 64 KiB boundary.
 .equ sectors_per_read, 64
-.equ kernel_reads, 4
+.equ kernel_reads, 8
 .equ paragraphs_per_read, sectors_per_read * 512 / 16
 
 .section .text

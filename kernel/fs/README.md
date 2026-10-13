@@ -1,7 +1,8 @@
 # File systems
 
-Three things live here: the VFS, the SHRFS1 driver behind `/`, and devfs behind
-`/dev`.
+Here live the VFS, the SHRFS1 driver behind `/`, devfs behind `/dev`, the
+read-only exFAT driver, and `device_mount.cpp`, which mounts an exFAT device
+at runtime.
 
     shell / ELF loader
            ↓
@@ -96,3 +97,32 @@ by writing zero bytes to it: kbd0 uses the generic `ByteStream` adapter table,
 which has a write, while the input queue behind it refuses every one. A write of
 zero bytes moves nothing by the `io::Result` contract, so asking costs nothing
 and asks exactly the right question.
+
+## exFAT
+
+`exfat.cpp` implements Microsoft's published exFAT specification, read-only.
+An `exfat::Volume` is an object, one per volume, mounted on any
+`io::BlockDevice` — normally an `io::BlockCache`, because the FAT and the
+directory entries are read over and over.
+
+Mounting checks the boot sector and its 11-sector checksum, walks the FAT for
+the root directory's length, requires an allocation bitmap, and loads, checks
+and expands the up-case table. Files are contiguous (NoFatChain) or
+FAT-chained, and bytes past `ValidDataLength` read as zero. Names compare
+case-insensitively through the volume's own up-case table, hash first. Entry
+sets with a bad checksum, a disagreeing hash, or an illegal name (`/`, `.`,
+`..` among them) are skipped, and every FAT walk is bounded by the cluster
+count, so a looping chain cannot hang the kernel.
+
+A node identifier records where the entry set lives — the parent's first
+cluster, whether the parent is contiguous, and the slot — rather than the
+file's own clusters, and each access reads the entries again. The identifier
+therefore cannot go stale, and a set straddling a cluster boundary needs no
+special case.
+
+`device_mount.cpp` is what the shell's `mount <device> <path>` calls: it finds
+the device through devfs, puts a 64-block cache in front of it, mounts exFAT,
+and mounts that into the VFS. `umount` refuses while files are open.
+
+The test image `tests/images/exfat-basic.img` is written by
+`tools/make-exfat-image.py`, which shares no code with this driver.

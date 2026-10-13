@@ -38,10 +38,17 @@
 // `device::find("kbd0")` name the very same object.
 namespace shirley::vfs {
 
-// 路徑與名稱長度上限，與 SHRFS 的限制一致。
-// The path and name limits, the same ones SHRFS uses.
-constexpr std::size_t max_path_length = 128;
-constexpr std::size_t max_name_length = 55;
+// 路徑與名稱長度上限，以 UTF-8 位元組計。名稱上限與 ext4 及 Linux 的 NAME_MAX
+// 相同；exFAT 與 NTFS 的名稱最多 255 個 UTF-16 單元，換成 UTF-8 之後放不下的
+// 那些罕見名稱會被明確拒絕，而不是截斷。個別檔案系統可以更嚴格，SHRFS 就只到
+// 55。
+//
+// The path and name limits, in UTF-8 bytes. The name limit matches ext4 and
+// Linux's NAME_MAX. exFAT and NTFS names run to 255 UTF-16 units, and the rare
+// one that no longer fits once converted to UTF-8 is refused outright rather
+// than truncated. A file system may be stricter: SHRFS stops at 55.
+constexpr std::size_t max_path_length = 512;
+constexpr std::size_t max_name_length = 255;
 
 // 節點種類。目錄與檔案來自檔案系統；兩種裝置來自 devfs，分開是因為只有區塊
 // 裝置能做區塊層存取。

@@ -11,7 +11,8 @@ without spending a cycle.
 
 Every path the shell touches goes through the VFS, so `cat /etc/motd` and
 `cat /dev/kbd0` are the same command doing the same thing. `mount` shows which
-file systems are behind which paths, `devices` lists what is under /dev, and
+file systems are behind which paths (`mount /dev/<disk> /mnt` mounts an exFAT
+volume read-only, and `umount /mnt` removes it), `devices` lists what is under /dev, and
 `blk /dev/ram0 0` dumps a sector of the disk this file is stored on.
 
 The line editor is deliberately small: printable characters are appended and
