@@ -74,6 +74,17 @@ fi
 # 開發者切換時 CMake 快取才不會互相衝突。
 # Ninja is optional. Each generator gets its own build tree so a developer
 # switching between them does not hit conflicting CMake caches.
+# Git Bash 的 command -v 回傳的路徑沒有 .exe，CMake 卻要求編譯器是實際存在的
+# 檔案；Windows 上有對應的 .exe 時就補上。
+# Git Bash's command -v returns a path without .exe, while CMake insists the
+# compiler is an existing file; on Windows, add .exe where that file exists.
+for tool in cc cxx asm objcopy lld; do
+  eval "path=\$$tool"
+  if [ -n "$path" ] && [ "${path%.exe}" = "$path" ] && [ -f "$path.exe" ]; then
+    eval "$tool=\"\$path.exe\""
+  fi
+done
+
 build="$root/build/$target"
 ninja_bin=$(command -v ninja 2>/dev/null || true)
 if [ -z "$ninja_bin" ] && [ -x "/c/Users/shirl/AppData/Local/Microsoft/WinGet/Packages/Ninja-build.Ninja_Microsoft.Winget.Source_8wekyb3d8bbwe/ninja.exe" ]; then
