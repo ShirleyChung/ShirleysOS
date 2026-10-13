@@ -200,6 +200,27 @@ if(SHIRLEY_ARCH STREQUAL host)
   target_include_directories(shirley-exfat-smoke PRIVATE include)
   add_test(NAME exfat-smoke
     COMMAND shirley-exfat-smoke ${CMAKE_SOURCE_DIR}/tests/images/exfat-basic.img)
+
+  # 寫入測試從 exfat-clean.img 出發，把寫過的映像存下來；有 Python 的話，再交給
+  # 依規格獨立寫成的 tools/check-exfat-image.py 檢查一致性。
+  #
+  # The write test starts from exfat-clean.img and saves the image it wrote;
+  # when Python is available, tools/check-exfat-image.py — written independently
+  # from the specification — then checks it for consistency.
+  add_executable(shirley-exfat-write-smoke tests/exfat_write_smoke.cpp)
+  target_link_libraries(shirley-exfat-write-smoke PRIVATE shirley-kernel-core)
+  target_include_directories(shirley-exfat-write-smoke PRIVATE include)
+  add_test(NAME exfat-write-smoke
+    COMMAND shirley-exfat-write-smoke ${CMAKE_SOURCE_DIR}/tests/images/exfat-clean.img
+            ${CMAKE_CURRENT_BINARY_DIR}/exfat-written.img)
+  set_tests_properties(exfat-write-smoke PROPERTIES FIXTURES_SETUP exfat-written)
+  find_package(Python3 COMPONENTS Interpreter QUIET)
+  if(Python3_Interpreter_FOUND)
+    add_test(NAME exfat-written-image-check
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/check-exfat-image.py
+              ${CMAKE_CURRENT_BINARY_DIR}/exfat-written.img --clean)
+    set_tests_properties(exfat-written-image-check PROPERTIES FIXTURES_REQUIRED exfat-written)
+  endif()
   return()
 endif()
 

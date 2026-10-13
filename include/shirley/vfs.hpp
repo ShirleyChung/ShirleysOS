@@ -131,6 +131,34 @@ public:
     // `kbd0` cannot.
     virtual bool writable(const Node& node) const = 0;
 
+    // 以下是改變目錄結構的操作。唯讀的檔案系統不必實作它們：預設一律回報
+    // Unsupported。名稱與 lookup() 一樣不含斜線，也不會是 "." 或 ".."；VFS 已經
+    // 確認 directory 是目錄、同一個檔案系統，而且被操作的節點沒有被開啟。
+    //
+    // The operations below change the directory structure. A read-only file
+    // system need not implement them: by default each reports Unsupported.
+    // Names are as for lookup() — no slash, never "." or "..". The VFS has
+    // already checked that directory is a directory, that both sides belong to
+    // this file system, and that no node being operated on is open.
+
+    // 在 directory 底下建立一個空檔案或空目錄，名字已經存在時回報 AlreadyExists。
+    // Create an empty file or directory inside directory; AlreadyExists when
+    // the name is taken.
+    virtual io::Error create(const Node& directory, const char* name, Type type, Node& result);
+    // 刪除一個檔案或一個空目錄。 / Delete a file or an empty directory.
+    virtual io::Error remove(const Node& directory, const char* name);
+    // 改名或搬移。目標名稱已經存在時回報 AlreadyExists，不會蓋掉它。
+    // Rename or move. When the target name exists this reports AlreadyExists
+    // rather than replacing it.
+    virtual io::Error rename(const Node& from_directory, const char* from_name,
+                             const Node& to_directory, const char* to_name);
+    // 把檔案截短或補長到 size；補長的部分讀起來是零。
+    // Cut a file down, or extend it, to size; an extension reads as zeros.
+    virtual io::Error truncate(const Node& file, std::uint64_t size);
+    // 把留在快取裡的修改寫到裝置上。 / Write modifications still held in
+    // caches down to the device.
+    virtual io::Error sync();
+
 protected:
     ~FileSystem() = default;
 };
@@ -149,7 +177,18 @@ constexpr std::size_t max_open_files = 16;
 //
 // The access an open asks for. Asking for write on a read-only file system
 // fails at open() rather than at the first write.
-enum class OpenFlags : std::uint8_t { Read = 1u << 0, Write = 1u << 1 };
+//
+// Create 在檔案不存在時建立它（父目錄必須存在）；Truncate 在以寫入開啟時把
+// 檔案截成空的。
+//
+// Create makes the file when it does not exist (its parent has to); Truncate
+// empties the file when it is opened for writing.
+enum class OpenFlags : std::uint8_t {
+    Read = 1u << 0,
+    Write = 1u << 1,
+    Create = 1u << 2,
+    Truncate = 1u << 3,
+};
 constexpr OpenFlags operator|(OpenFlags left, OpenFlags right) {
     return static_cast<OpenFlags>(static_cast<std::uint8_t>(left) |
                                   static_cast<std::uint8_t>(right));
@@ -169,6 +208,7 @@ constexpr int error_is_directory = -2;
 constexpr int error_read_only = -3;
 constexpr int error_no_descriptors = -4;
 constexpr int error_invalid = -5;
+constexpr int error_no_space = -6;
 const char* error_text(int error);
 
 // 清空掛載表與描述子表；必須在任何掛載之前呼叫。
@@ -244,6 +284,24 @@ io::Result block_write(int descriptor, std::uint64_t first, std::size_t count,
                        const void* buffer);
 std::size_t block_size(int descriptor);
 std::uint64_t block_count(int descriptor);
+
+// 建立目錄、刪除檔案或空目錄、改名或搬移。被開啟的節點、掛載點，以及
+// 不同檔案系統之間的搬移都會被拒絕（Busy 與 Unsupported）；目錄不能被搬進
+// 它自己底下。
+//
+// Make a directory, delete a file or an empty directory, rename or move.
+// A node that is open, a mount point, and a move between file systems are
+// refused (Busy and Unsupported), and a directory cannot be moved inside
+// itself.
+io::Error make_directory(const char* path, const char* base = nullptr);
+io::Error remove(const char* path, const char* base = nullptr);
+io::Error rename(const char* from, const char* to, const char* base = nullptr);
+// 截短或補長一個以寫入開啟的檔案。 / Cut down or extend a file opened for
+// writing.
+io::Error truncate(int descriptor, std::uint64_t size);
+// 把每個掛載的檔案系統都 sync 一次，回報第一個錯誤。
+// Sync every mounted file system and report the first error.
+io::Error sync();
 
 // 把整個檔案讀進緩衝區，回傳讀到的位元組數；檔案放不下或不存在時回傳 0。
 // ELF loader 需要一段連續的映像才能走 program header，因此這個便利函式存在。

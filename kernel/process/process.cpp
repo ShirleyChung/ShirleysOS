@@ -28,6 +28,9 @@ bool in_range(int descriptor) { return descriptor >= 0 && descriptor < max_open_
 constexpr std::uint64_t open_read_only = 0;
 constexpr std::uint64_t open_write_only = 1;
 constexpr std::uint64_t open_read_write = 2;
+constexpr std::uint64_t open_access_mask = 3;
+constexpr std::uint64_t open_create = 0100;
+constexpr std::uint64_t open_truncate = 01000;
 
 } // namespace
 
@@ -47,10 +50,14 @@ void teardown() {
 
 long long open(const char* path, std::uint64_t flags) {
     if (path == nullptr) return -1;
+    if ((flags & ~(open_access_mask | open_create | open_truncate)) != 0) return -1;
+    const auto mode = flags & open_access_mask;
     vfs::OpenFlags access = vfs::OpenFlags::Read;
-    if (flags == open_write_only) access = vfs::OpenFlags::Write;
-    else if (flags == open_read_write) access = vfs::OpenFlags::Read | vfs::OpenFlags::Write;
-    else if (flags != open_read_only) return -1;
+    if (mode == open_write_only) access = vfs::OpenFlags::Write;
+    else if (mode == open_read_write) access = vfs::OpenFlags::Read | vfs::OpenFlags::Write;
+    else if (mode != open_read_only) return -1;
+    if ((flags & open_create) != 0) access = access | vfs::OpenFlags::Create;
+    if ((flags & open_truncate) != 0) access = access | vfs::OpenFlags::Truncate;
     // 使用者程式還沒有自己的工作目錄，因此路徑以根目錄為基準解析。
     // A user program has no working directory of its own yet, so a path is
     // resolved against the root.

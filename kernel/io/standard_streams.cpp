@@ -1,6 +1,23 @@
 #include "shirley/io.hpp"
 
 namespace shirley::io {
+
+const char* error_text(Error error) {
+    switch (error) {
+    case Error::None: return "success";
+    case Error::Unsupported: return "operation not supported";
+    case Error::InvalidArgument: return "invalid argument";
+    case Error::OutOfRange: return "out of range";
+    case Error::DeviceError: return "device error";
+    case Error::NotFound: return "no such file or directory";
+    case Error::AlreadyExists: return "already exists";
+    case Error::NoSpace: return "no space left on device";
+    case Error::NotEmpty: return "directory not empty";
+    case Error::Busy: return "busy";
+    case Error::ReadOnly: return "read-only file system";
+    }
+    return "unknown error";
+}
 namespace {
 ByteStream* input = nullptr;
 ByteStream* output = nullptr;

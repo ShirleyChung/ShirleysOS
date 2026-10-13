@@ -100,7 +100,8 @@ and asks exactly the right question.
 
 ## exFAT
 
-`exfat.cpp` implements Microsoft's published exFAT specification, read-only.
+`exfat.cpp` implements Microsoft's published exFAT specification, for reading
+and writing.
 An `exfat::Volume` is an object, one per volume, mounted on any
 `io::BlockDevice` — normally an `io::BlockCache`, because the FAT and the
 directory entries are read over and over.
@@ -126,6 +127,14 @@ and mounts that into the VFS. `umount` refuses while files are open.
 
 The test image `tests/images/exfat-basic.img` is written by
 `tools/make-exfat-image.py`, which shares no code with this driver.
+
+Writing follows data, then allocation, then the entry set, so an interrupted
+write can leak clusters but never leave an entry pointing at unwritten or freed
+ones. A file stays contiguous while the next cluster is free and becomes
+FAT-chained when it is not; a full directory grows by a zeroed cluster. A
+writable mount sets VolumeDirty on the device first and clears it at unmount;
+a volume that was already dirty mounts read-only. `tools/check-exfat-image.py`
+checks the images the tests write.
 
 ## Partitions
 

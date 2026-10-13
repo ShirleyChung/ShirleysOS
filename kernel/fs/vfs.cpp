@@ -169,7 +169,57 @@ bool mount_as_child(Mount& mount, Node& child) {
     return text::copy(child.name, sizeof(child.name), leaf);
 }
 
+// 這個路徑是不是掛載點，或者底下有掛載點。這樣的目錄不能被刪除或搬走：
+// 掛載點會變成指向不存在的地方。
+//
+// Whether this path is a mount point or has one beneath it. Such a directory
+// cannot be deleted or moved: the mount point would be left naming nothing.
+bool covers_mount(const char* path) {
+    for (std::size_t index = 0; index < mount_total; ++index)
+        if (path_starts_with(mounts[index].path, path)) return true;
+    return false;
+}
+
+// 這個路徑本身或它底下有沒有開著的檔案。刪除或搬走它們，會讓那些描述子指向
+// 一個已經不在那裡的節點。
+//
+// Whether a file at this path, or beneath it, is open. Deleting or moving it
+// would leave those descriptors naming a node that is no longer there.
+bool covers_open_file(const char* path) {
+    for (std::size_t index = 0; index < max_open_files; ++index)
+        if (files[index].used && path_starts_with(files[index].node.path, path)) return true;
+    return false;
+}
+
+// 把路徑拆成父目錄與最後一個名稱，並解析父目錄。根目錄沒有父目錄。
+// Split a path into its parent directory and final name, and resolve the
+// parent. The root has no parent.
+io::Error parent_of(const char* path, const char* base, char* normalized, Node& parent,
+                    char* leaf) {
+    if (path == nullptr) return io::Error::InvalidArgument;
+    if (!normalize(path, base, normalized, max_path_length)) return io::Error::InvalidArgument;
+    if (text::equals(normalized, "/")) return io::Error::InvalidArgument;
+    const char* last = normalized;
+    for (const char* scan = normalized; *scan != '\0'; ++scan)
+        if (is_separator(*scan)) last = scan + 1;
+    if (!text::copy(leaf, max_name_length + 1, last)) return io::Error::InvalidArgument;
+    char parent_path[max_path_length];
+    if (!text::copy(parent_path, sizeof(parent_path), normalized)) return io::Error::InvalidArgument;
+    remove_last_component(parent_path);
+    if (!stat(parent_path, parent)) return io::Error::NotFound;
+    if (!parent.directory()) return io::Error::NotFound;
+    return io::Error::None;
+}
+
 } // namespace
+
+io::Error FileSystem::create(const Node&, const char*, Type, Node&) { return io::Error::Unsupported; }
+io::Error FileSystem::remove(const Node&, const char*) { return io::Error::Unsupported; }
+io::Error FileSystem::rename(const Node&, const char*, const Node&, const char*) {
+    return io::Error::Unsupported;
+}
+io::Error FileSystem::truncate(const Node&, std::uint64_t) { return io::Error::Unsupported; }
+io::Error FileSystem::sync() { return io::Error::None; }
 
 const char* type_name(Type type) {
     switch (type) {
@@ -188,6 +238,7 @@ const char* error_text(int error) {
     case error_read_only: return "read-only file system";
     case error_no_descriptors: return "too many open files";
     case error_invalid: return "invalid argument";
+    case error_no_space: return "no space left on device";
     }
     return error < 0 ? "unknown error" : "success";
 }
@@ -344,13 +395,46 @@ std::size_t child_count(const Node& directory) {
     return total;
 }
 
+namespace {
+
+int open_error(io::Error error) {
+    switch (error) {
+    case io::Error::NotFound: return error_not_found;
+    case io::Error::ReadOnly: return error_read_only;
+    case io::Error::NoSpace: return error_no_space;
+    case io::Error::Unsupported: return error_read_only;
+    default: return error_invalid;
+    }
+}
+
+} // namespace
+
 int open(const char* path, OpenFlags flags, const char* base) {
     if (path == nullptr) return error_invalid;
     Node node;
-    if (!stat(path, node, base)) return error_not_found;
+    if (!stat(path, node, base)) {
+        if (!contains(flags, OpenFlags::Create)) return error_not_found;
+        // 不存在而且要求建立：在父目錄裡建一個空檔案。
+        // Missing and asked to be created: make an empty file in the parent.
+        char normalized[max_path_length];
+        char leaf[max_name_length + 1];
+        Node parent;
+        const auto found = parent_of(path, base, normalized, parent, leaf);
+        if (found != io::Error::None) return open_error(found);
+        if (!parent.filesystem->writable(parent)) return error_read_only;
+        const auto made = parent.filesystem->create(parent, leaf, Type::File, node);
+        if (made != io::Error::None) return open_error(made);
+        node.filesystem = parent.filesystem;
+        if (!text::copy(node.path, sizeof(node.path), normalized)) return error_invalid;
+    }
     if (node.directory()) return error_is_directory;
     if (contains(flags, OpenFlags::Write) && !node.filesystem->writable(node))
         return error_read_only;
+    if (contains(flags, OpenFlags::Write) && contains(flags, OpenFlags::Truncate) && node.size != 0) {
+        const auto cut = node.filesystem->truncate(node, 0);
+        if (cut != io::Error::None) return open_error(cut);
+        node.size = 0;
+    }
     for (std::size_t index = 0; index < max_open_files; ++index) {
         if (files[index].used) continue;
         files[index] = OpenFile{true, node, 0, flags};
@@ -388,6 +472,11 @@ io::Result write(int descriptor, const void* buffer, std::size_t length) {
     if (!contains(file->flags, OpenFlags::Write)) return {0, io::Error::Unsupported};
     const auto result = file->node.filesystem->write(file->node, file->position, buffer, length);
     if (result) file->position += result.transferred;
+    // 寫過檔案結尾就把記住的大小跟著放大，之後的 stat 與讀取才看得到。
+    // Writing past the end grows the remembered size, so later reads and stat
+    // see it.
+    if (file->position > file->node.size && file->node.type == Type::File)
+        file->node.size = file->position;
     return result;
 }
 
@@ -401,6 +490,83 @@ bool seek(int descriptor, std::uint64_t offset) {
 std::uint64_t position(int descriptor) {
     auto* file = file_of(descriptor);
     return file == nullptr ? 0 : file->position;
+}
+
+io::Error make_directory(const char* path, const char* base) {
+    char normalized[max_path_length];
+    char leaf[max_name_length + 1];
+    Node parent;
+    const auto found = parent_of(path, base, normalized, parent, leaf);
+    if (found != io::Error::None) return found;
+    Node existing;
+    if (stat(normalized, existing)) return io::Error::AlreadyExists;
+    if (!parent.filesystem->writable(parent)) return io::Error::ReadOnly;
+    Node created;
+    return parent.filesystem->create(parent, leaf, Type::Directory, created);
+}
+
+io::Error remove(const char* path, const char* base) {
+    char normalized[max_path_length];
+    char leaf[max_name_length + 1];
+    Node parent;
+    const auto found = parent_of(path, base, normalized, parent, leaf);
+    if (found != io::Error::None) return found;
+    Node node;
+    if (!stat(normalized, node)) return io::Error::NotFound;
+    if (covers_mount(normalized) || covers_open_file(normalized)) return io::Error::Busy;
+    if (node.filesystem != parent.filesystem) return io::Error::Busy;
+    if (!parent.filesystem->writable(parent)) return io::Error::ReadOnly;
+    return parent.filesystem->remove(parent, leaf);
+}
+
+io::Error rename(const char* from, const char* to, const char* base) {
+    char from_path[max_path_length];
+    char from_leaf[max_name_length + 1];
+    Node from_parent;
+    auto found = parent_of(from, base, from_path, from_parent, from_leaf);
+    if (found != io::Error::None) return found;
+    char to_path[max_path_length];
+    char to_leaf[max_name_length + 1];
+    Node to_parent;
+    found = parent_of(to, base, to_path, to_parent, to_leaf);
+    if (found != io::Error::None) return found;
+
+    Node node;
+    if (!stat(from_path, node)) return io::Error::NotFound;
+    if (text::equals(from_path, to_path)) return io::Error::None;
+    Node existing;
+    if (stat(to_path, existing)) return io::Error::AlreadyExists;
+    if (covers_mount(from_path) || covers_open_file(from_path)) return io::Error::Busy;
+    // 不同檔案系統之間搬移等於複製再刪除，那是 user 程式的事，不是 VFS 的。
+    // A move between file systems is a copy and a delete, which is a user
+    // program's business rather than the VFS's.
+    if (node.filesystem != from_parent.filesystem || to_parent.filesystem != from_parent.filesystem)
+        return io::Error::Unsupported;
+    // 目錄不能搬進它自己底下，否則那棵子樹會跟根目錄斷開。
+    // A directory cannot move inside itself, or that subtree would be cut off
+    // from the root.
+    if (path_starts_with(to_path, from_path)) return io::Error::InvalidArgument;
+    if (!from_parent.filesystem->writable(from_parent)) return io::Error::ReadOnly;
+    return from_parent.filesystem->rename(from_parent, from_leaf, to_parent, to_leaf);
+}
+
+io::Error truncate(int descriptor, std::uint64_t size) {
+    auto* file = file_of(descriptor);
+    if (file == nullptr) return io::Error::InvalidArgument;
+    if (!contains(file->flags, OpenFlags::Write)) return io::Error::Unsupported;
+    if (file->node.type != Type::File) return io::Error::Unsupported;
+    const auto result = file->node.filesystem->truncate(file->node, size);
+    if (result == io::Error::None) file->node.size = size;
+    return result;
+}
+
+io::Error sync() {
+    io::Error first = io::Error::None;
+    for (std::size_t index = 0; index < mount_total; ++index) {
+        const auto result = mounts[index].filesystem->sync();
+        if (first == io::Error::None) first = result;
+    }
+    return first;
 }
 
 io::Result block_read(int descriptor, std::uint64_t first, std::size_t count, void* buffer) {

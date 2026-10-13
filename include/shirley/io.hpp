@@ -5,9 +5,25 @@
 
 namespace shirley::io {
 
-// I/O 操作的失敗原因。
-// Why an I/O operation failed.
-enum class Error : std::uint8_t { None, Unsupported, InvalidArgument, OutOfRange, DeviceError };
+// I/O 與檔案系統操作的失敗原因。後面幾個是可寫入的檔案系統才會用到的。
+// Why an I/O or file system operation failed. The later ones only arise with a
+// writable file system.
+enum class Error : std::uint8_t {
+    None,
+    Unsupported,
+    InvalidArgument,
+    OutOfRange,
+    DeviceError,
+    NotFound,
+    AlreadyExists,
+    NoSpace,
+    NotEmpty,
+    Busy,
+    ReadOnly,
+};
+// 診斷用的簡短說明，例如 "no space left on device"。
+// A short description for diagnostics, such as "no space left on device".
+const char* error_text(Error error);
 
 // 實際傳輸的位元組數與錯誤碼；成功時可直接當成布林值使用。
 // How many bytes moved plus an error code; converts to true on success.

@@ -867,6 +867,27 @@ A name is at most 255 UTF-8 bytes (Linux's NAME_MAX, and ext4's limit) and a
 path at most 512 bytes; passing either is an explicit failure rather than a
 truncation. A file system may be stricter: SHRFS1 still stops at 55 bytes.
 
+改變目錄結構的操作是 `vfs::make_directory()`、`vfs::remove()`、`vfs::rename()`、
+`vfs::truncate()` 與 `vfs::sync()`，`open()` 另外接受 `Create`（不存在就建立）與
+`Truncate`（以寫入開啟時清空）。`FileSystem` 對應的方法預設回報 Unsupported，因此
+唯讀的 SHRFS1 與 devfs 不必改動。VFS 先擋掉檔案系統不該煩惱的情況：被開啟的節點
+（或底下有開啟的檔案）、掛載點（或底下有掛載點）不能刪除或搬移，不同檔案系統之間
+的搬移是 Unsupported，目錄不能搬進自己底下，目標名稱已經存在時不會被蓋掉。失敗的
+原因是 `io::Error`，多了 NotFound、AlreadyExists、NoSpace、NotEmpty、Busy 與
+ReadOnly。
+
+The operations that change the directory structure are
+`vfs::make_directory()`, `vfs::remove()`, `vfs::rename()`, `vfs::truncate()` and
+`vfs::sync()`, and `open()` also takes `Create` (make the file when missing) and
+`Truncate` (empty it when opened for writing). The matching `FileSystem`
+methods report Unsupported by default, so the read-only SHRFS1 and devfs need
+no change. The VFS turns away what a file system should not have to worry
+about: a node that is open (or has open files beneath it) and a mount point (or
+a directory with one beneath it) can be neither deleted nor moved, a move
+between file systems is Unsupported, a directory cannot move inside itself,
+and an existing target name is never overwritten. Failures are `io::Error`,
+which gains NotFound, AlreadyExists, NoSpace, NotEmpty, Busy and ReadOnly.
+
 ## 檔案系統 / File system
 
 `shirley::fs` 掛載一份唯讀的 SHRFS1 卷冊。映像分成三段：32 位元組的標頭、
@@ -974,7 +995,7 @@ cache only.
 
 ### exFAT
 
-`exfat::Volume` 依照 Microsoft 公開的 exFAT 規格實作，目前唯讀。它是一個物件，
+`exfat::Volume` 依照 Microsoft 公開的 exFAT 規格實作，可讀可寫。它是一個物件，
 每個卷冊一個實例，因此可以同時掛載好幾個；所有存取都經過 `io::BlockDevice`。
 掛載時驗證開機磁區（含 11 個磁區的開機校驗和）、沿著 FAT 算出根目錄長度、找到
 配置位元圖，並載入、驗證、展開大寫表（65536 項，從堆積配置）。檔案可以是連續
@@ -989,7 +1010,7 @@ cache only.
 讀出，識別碼因此不可能和磁碟上的內容不一致；跨越叢集邊界的項目組也照樣讀得到。
 
 `exfat::Volume` is implemented from Microsoft's published exFAT
-specification and is read-only for now. It is an object, one instance per
+specification, for reading and writing. It is an object, one instance per
 volume, so several can be mounted at once, and every access goes through
 `io::BlockDevice`. Mounting validates the boot sector (with the 11-sector boot
 checksum), walks the FAT to learn the root directory's length, finds the
@@ -1008,6 +1029,46 @@ entry set lives: the parent's first cluster, whether the parent is contiguous,
 and the set's slot in the parent. Every access reads the entries afresh, so an
 identifier cannot disagree with the disk, and a set that straddles a cluster
 boundary is read like any other.
+
+可寫的掛載（`mount(device, true)`）先把 VolumeDirty 寫到裝置上並 flush，之後才
+可能有任何修改；`unmount()` 寫回一切之後才清掉它。上次沒有乾淨卸載的卷冊、有兩份
+FAT 的 TexFAT，以及拒絕寫入的裝置都退回唯讀掛載，名稱顯示為 `exfat (ro)`。
+
+寫入依照「先資料、再配置、最後項目組」的順序：中途斷電最多洩漏叢集，不會留下
+指向沒寫好或已釋放叢集的項目。叢集從配置位元圖取得；檔案盡量接在自己最後一個
+叢集之後、維持連續（NoFatChain），接不上時把既有的叢集寫進 FAT、改成串接。寫在
+`ValidDataLength` 之後時，中間的空隙先寫成零。目錄放不下新的項目組時長一個清成零
+的叢集，並更新目錄自己的長度。刪除只清掉每個項目的使用中位元；改名先寫新的項目
+組、再讓舊的失效，所以任何時候檔案至少有一個名字。新項目的時間戳記是 exFAT 的
+紀元 1980-01-01，因為還沒有即時鐘。
+
+A writable mount (`mount(device, true)`) puts VolumeDirty on the device and
+flushes it before any modification can happen, and `unmount()` clears it only
+after writing everything back. A volume not cleanly unmounted last time, a
+TexFAT volume with two FATs, and a device that refuses writes all fall back to
+a read-only mount, shown as `exfat (ro)`.
+
+Writes go data first, then allocation, then the entry set: a power cut part
+way leaks clusters at worst and never leaves an entry pointing at clusters
+that were not written or were already freed. Clusters come from the
+allocation bitmap; a file continues right after its own last cluster where it
+can and stays contiguous (NoFatChain), and when it cannot its existing clusters
+are written into the FAT and it becomes chained. A write past
+`ValidDataLength` zeroes the gap first. A directory too full for a new entry
+set grows by a zeroed cluster and has its own length updated. Deleting clears
+only each entry's in-use bit; renaming writes the new entry set before retiring
+the old one, so at every moment a file has at least one name. New entries are
+stamped with the exFAT epoch, 1980-01-01, since there is no real-time clock
+yet.
+
+`tools/check-exfat-image.py` 是依規格獨立寫成的一致性檢查：校驗和、名稱雜湊、
+FAT 鏈、叢集沒有兩個擁有者，以及配置位元圖與實際使用的叢集完全一致。主機的
+寫入測試與 QEMU 開機測試都把寫過的映像交給它。
+
+`tools/check-exfat-image.py` is a consistency check written independently from
+the specification: checksums, name hashes, FAT chains, no cluster with two
+owners, and an allocation bitmap that matches the clusters in use exactly. Both
+the host write test and the QEMU boot tests hand it the images they wrote.
 
 UTF-16 與 UTF-8 的轉換在 `text::utf16_to_utf8()`／`utf8_to_utf16()`。磁碟上落單
 的代理字元以 WTF-8 的方式編碼，兩個方向互為反函數，列得出來的名稱一定查得回去。
@@ -1190,7 +1251,8 @@ the kernel, and the result comes back in the first argument register:
 
 編號有 `write`(1)、`exit`(2)、`read`(3)、`open`(4)、`close`(5)、`stat`(6)、
 `list`(7)、`uptime`(8)、`exec`(9)、`mount_info`(10)、`block_read`(11)、
-`mount_device`(12) 與 `unmount`(13)；結構化的引數與結果定義在
+`mount_device`(12)、`unmount`(13)、`mkdir`(14)、`remove`(15)、`rename`(16) 與
+`sync`(17)；結構化的引數與結果定義在
 `include/shirley/user_api.hpp`，名稱上限 256 位元組、路徑上限 512 位元組。架構
 配接層（x86_64 的 IDT 向量 0x80、ARM64 的 EL0 同步例外）把暫存器填進共用的
 `syscall::Context`，再交給 `syscall::dispatch()`。`libc/arch/<arch>/syscall.S`
@@ -1199,7 +1261,8 @@ the kernel, and the result comes back in the first argument register:
 
 The numbers are `write`(1), `exit`(2), `read`(3), `open`(4), `close`(5),
 `stat`(6), `list`(7), `uptime`(8), `exec`(9), `mount_info`(10),
-`block_read`(11), `mount_device`(12), and `unmount`(13); structured arguments
+`block_read`(11), `mount_device`(12), `unmount`(13), `mkdir`(14), `remove`(15),
+`rename`(16), and `sync`(17); structured arguments
 and results are defined in `include/shirley/user_api.hpp`, with names up to 256
 bytes and paths up to 512. The architecture adapters — the IDT vector 0x80 on x86_64 and the
 EL0 synchronous exception on ARM64 — fill the registers into a shared
@@ -1676,6 +1739,30 @@ mount the exFAT partition on it, and read files.
 Still missing: exFAT writing, ext4 and NTFS, interrupt-driven and concurrent
 disk I/O, modern (1.0) virtio, and the storage controllers of physical
 machines (AHCI, NVMe, USB).
+
+### M4.3 — exFAT 寫入 / exFAT writing
+
+exFAT 可讀可寫。VFS 有了建立、刪除、改名、截短與 sync，`open()` 接受 Create 與
+Truncate；新的系統呼叫是 `mkdir`(14)、`remove`(15)、`rename`(16)、`sync`(17)，
+`open` 認得 `O_CREAT` 與 `O_TRUNC`。`/bin/init` 多了 `mkdir`、`rm`、`mv`、`sync`，
+`echo ... > 檔案` 會建立檔案。主機測試在 `exfat-clean.img` 的複本上做每一種寫入，
+包括目錄長大、從連續改成 FAT 串接、寫到滿再刪掉；QEMU 開機測試在四個目標上都經由
+virtio 磁碟寫入、卸載，再把磁碟上的分割區交給 `tools/check-exfat-image.py`。
+
+尚未完成的是時間戳記（沒有即時鐘）、只差大小寫的改名、ext4 與 NTFS。
+
+exFAT is readable and writable. The VFS gains create, delete, rename, truncate
+and sync, and `open()` takes Create and Truncate; the new syscalls are
+`mkdir`(14), `remove`(15), `rename`(16) and `sync`(17), and `open` understands
+`O_CREAT` and `O_TRUNC`. `/bin/init` gains `mkdir`, `rm`, `mv` and `sync`, and
+`echo ... > file` creates the file. The host test performs every kind of write
+on a copy of `exfat-clean.img`, including a directory growing, a contiguous
+file turning FAT-chained, and filling the volume and deleting again; the QEMU
+boot tests write through a virtio disk on all four targets, unmount, and hand
+the partition on the disk to `tools/check-exfat-image.py`.
+
+Still missing: timestamps (there is no real-time clock), renames that change
+only letter case, ext4 and NTFS.
 
 ### 後續規劃 / Roadmap
 

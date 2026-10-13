@@ -11,7 +11,10 @@
 # 空檔案、長的非 ASCII 名稱、已刪除、校驗和錯誤、雜湊錯誤與名稱不合法的項目組、
 # 壓縮的大寫表。
 #
-# 用法：python tools/make-exfat-image.py [輸出路徑]
+# --clean 產生 tests/images/exfat-clean.img：同樣的內容，但不含任何損壞的項目組，
+# 給寫入測試當起點，寫完之後交給 tools/check-exfat-image.py 檢查。
+#
+# 用法：python tools/make-exfat-image.py [--clean] [輸出路徑]
 #
 # Generate the exFAT test image tests/images/exfat-basic.img.
 #
@@ -28,7 +31,11 @@
 # empty file, a long non-ASCII name, deleted, bad-checksum, bad-hash and
 # illegally named entry sets, and a compressed up-case table.
 #
-# Usage: python tools/make-exfat-image.py [output path]
+# --clean writes tests/images/exfat-clean.img instead: the same content without
+# any damaged entry set, the starting point for the write tests, whose result
+# tools/check-exfat-image.py then checks.
+#
+# Usage: python tools/make-exfat-image.py [--clean] [output path]
 
 import os
 import struct
@@ -46,6 +53,9 @@ CLUSTER_COUNT = (VOLUME_SECTORS - HEAP_OFFSET) >> CLUSTER_SECTOR_SHIFT
 SERIAL = 0x5348524C
 # 2026-10-13 12:00:00，DOS 時間戳記格式。 / In DOS timestamp format.
 TIMESTAMP = ((2026 - 1980) << 25) | (10 << 21) | (13 << 16) | (12 << 11)
+
+CLEAN = "--clean" in sys.argv[1:]
+ARGUMENTS = [argument for argument in sys.argv[1:] if argument != "--clean"]
 
 image = bytearray(VOLUME_SECTORS * SECTOR)
 fat = [0] * (CLUSTER_COUNT + 2)
@@ -77,6 +87,14 @@ def checksum16(data, skip=()):
 
 def cluster_offset(cluster):
     return HEAP_OFFSET * SECTOR + (cluster - 2) * CLUSTER
+
+
+def skip(count):
+    """跳過 count 個叢集，留著不配置，讓之後的配置不連續。
+    Skip count clusters, leaving them unallocated, so later allocations are not
+    contiguous."""
+    global next_free
+    next_free += count
 
 
 def take(count):
@@ -215,7 +233,7 @@ bitmap_cluster = take(1)
 upcase_clusters = (len(UPCASE_BYTES) + CLUSTER - 1) // CLUSTER
 upcase_first = take(upcase_clusters)
 root_first = take(1)
-gap = take(1)
+skip(1)
 root_second = take(1)
 root_clusters = [root_first, root_second]
 
@@ -246,32 +264,36 @@ root.append(ghost)
 
 add_file(root, "empty.txt", b"")
 
-# 不照順序串接的叢集，中間夾著別人的叢集。
-# Clusters chained out of order, with someone else's clusters in between.
-base = take(7)
-add_file(root, "fragmented.bin", pattern(14000, 7),
-         contiguous=False, clusters=[base + 4, base, base + 6, base + 2])
+# 不照順序串接的叢集，中間夾著沒有配置的空隙。
+# Clusters chained out of order, with unallocated gaps in between.
+base = next_free
+skip(7)
+fragments = [base + 4, base, base + 6, base + 2]
+allocated.update(fragments)
+add_file(root, "fragmented.bin", pattern(14000, 7), contiguous=False, clusters=fragments)
 
 add_file(root, "prealloc.bin", pattern(5000, 3), slack=b"\xEE" * 3192)
 add_file(root, "big.bin", pattern(20000, 13))
 
 # 校驗和錯誤的項目組，讀取端必須跳過它。
 # An entry set with a bad checksum, which the reader must skip.
-broken = entry_set("BROKEN.TXT", 0x20, 0, 0)
-broken[2] ^= 0xFF
-root.append(broken)
+if not CLEAN:
+    broken = entry_set("BROKEN.TXT", 0x20, 0, 0)
+    broken[2] ^= 0xFF
+    root.append(broken)
 
 # 名稱雜湊錯誤（校驗和重算過，所以只有雜湊不對）、含非法字元的名稱、名為 ".."
 # 的項目：讀取端都必須跳過，否則會列出查不到的名字，或讓走訪繞回自己。
 # A wrong name hash (with the checksum recomputed, so only the hash is off), a
 # name with an illegal character, and an entry called "..": the reader must
 # skip all three, or it lists names it cannot look up, or a walk loops.
-bad_hash = entry_set("BADHASH.TXT", 0x20, 0, 0)
-bad_hash[36] ^= 0x01
-struct.pack_into("<H", bad_hash, 2, checksum16(bad_hash, skip=(2, 3)))
-root.append(bad_hash)
-root.append(entry_set("a:b.txt", 0x20, 0, 0))
-root.append(entry_set("..", 0x10, 0, 0))
+if not CLEAN:
+    bad_hash = entry_set("BADHASH.TXT", 0x20, 0, 0)
+    bad_hash[36] ^= 0x01
+    struct.pack_into("<H", bad_hash, 2, checksum16(bad_hash, skip=(2, 3)))
+    root.append(bad_hash)
+    root.append(entry_set("a:b.txt", 0x20, 0, 0))
+    root.append(entry_set("..", 0x10, 0, 0))
 
 # docs/ 與 docs/sub/：長的中文名稱、大小寫混合的名稱、巢狀目錄。
 # docs/ and docs/sub/: a long Chinese name, a mixed-case name, nesting.
@@ -291,7 +313,7 @@ many = []
 for number in range(60):
     add_file(many, "f%03d.txt" % number, ("file %03d\n" % number).encode())
 first = take(1)
-take(1)
+skip(1)
 second = take(1)
 add_directory(root, "many", many, [first, second], False)
 
@@ -330,8 +352,9 @@ for offset in range(11 * SECTOR, 12 * SECTOR, 4):
 image[0:len(boot)] = boot
 image[len(boot):2 * len(boot)] = boot
 
-output = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", "tests", "images", "exfat-basic.img")
+output = ARGUMENTS[0] if ARGUMENTS else os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "tests", "images",
+    "exfat-clean.img" if CLEAN else "exfat-basic.img")
 os.makedirs(os.path.dirname(os.path.abspath(output)), exist_ok=True)
 with open(output, "wb") as handle:
     handle.write(image)

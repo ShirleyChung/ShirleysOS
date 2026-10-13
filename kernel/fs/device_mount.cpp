@@ -51,7 +51,10 @@ const char* mount_device(const char* device_path, const char* path, const char* 
 
     slot->blocks.bind(node.device);
     if (!slot->cache.initialize(cache_blocks)) return "out of memory";
-    const auto error = slot->volume.mount(slot->cache);
+    // 要求可寫的掛載；卷冊上次沒有乾淨卸載、或裝置唯讀時會退回唯讀。
+    // Ask for a writable mount; it falls back to read-only when the volume
+    // was not cleanly unmounted last time or the device is read-only.
+    const auto error = slot->volume.mount(slot->cache, true);
     if (error != exfat::MountError::None) {
         slot->cache.shutdown();
         return exfat::mount_error_text(error);
@@ -73,17 +76,21 @@ const char* unmount_device(const char* path, const char* base) {
     for (auto& slot : slots) {
         if (!slot.used || !text::equals(slot.path, target)) continue;
         if (!vfs::unmount(target)) return "busy";
-        slot.volume.unmount();
-        // 唯讀的卷冊沒有待寫回的區塊，shutdown() 不會失敗；之後支援寫入時，
-        // 失敗要在 VFS 卸載之前就處理。
+        // Volume::unmount() 寫回所有修改並清掉 VolumeDirty，快取接著把剩下的
+        // 區塊寫到裝置上。寫回失敗時槽位仍然釋放——VFS 已經放手了——但要說
+        // 出來；那份快取的緩衝區就留在堆積裡，不能拿來給下一個掛載用。
         //
-        // A read-only volume leaves nothing to write back, so shutdown() cannot
-        // fail; once writing is supported, a failure has to be dealt with
-        // before the VFS unmount.
-        slot.cache.shutdown();
+        // Volume::unmount() writes back every modification and clears
+        // VolumeDirty, then the cache pushes whatever is left to the device. If
+        // that write-back fails the slot is still released, since the VFS has
+        // already let go, but the failure is reported; that cache's buffers
+        // stay behind in the heap rather than being handed to the next mount.
+        slot.volume.unmount();
+        const bool written = static_cast<bool>(slot.cache.shutdown());
+        if (!written) slot.cache = io::BlockCache{slot.blocks};
         slot.path[0] = '\0';
         slot.used = false;
-        return nullptr;
+        return written ? nullptr : "unmounted, but writing back to the device failed";
     }
     return "not a mounted device";
 }

@@ -29,6 +29,13 @@ struct MountRequest {
     char* reason;
     std::uint64_t capacity;
 };
+// 檔案系統系統呼叫的失敗碼，就是 io::Error 的數值取負號：-1 不支援、-2 參數
+// 錯誤、-3 超出範圍、-4 裝置錯誤、-5 不存在、-6 已存在、-7 空間不足、-8 目錄
+// 不是空的、-9 正在使用、-10 唯讀。
+// The failure codes of the file system syscalls are io::Error's values negated:
+// -1 unsupported, -2 invalid argument, -3 out of range, -4 device error, -5 not
+// found, -6 already exists, -7 no space, -8 directory not empty, -9 busy, -10
+// read-only.
 struct BlockReadRequest {
     const char* path;
     std::uint64_t block;

@@ -277,7 +277,7 @@ device registry + VFS + shell + user programs
 | `shrfs.cpp` | SHRFS1 image mount 與低階 read/list/walk。 | read-only root filesystem driver。 |
 | `shrfs_vfs.cpp` | 把 SHRFS1 expose 成 `vfs::FileSystem`。 | filesystem-to-VFS adapter。 |
 | `devfs.cpp` | 把 device registry expose 成 `/dev`。 | device namespace filesystem。 |
-| `exfat.cpp` | 唯讀 exFAT：boot checksum、FAT/NoFatChain、entry set、大寫表、不分大小寫查找。 | exFAT filesystem driver。 |
+| `exfat.cpp` | exFAT 讀寫：boot checksum、FAT/NoFatChain、entry set、大寫表、不分大小寫查找；位元圖配置、建立/刪除/改名/截短、VolumeDirty。 | exFAT filesystem driver。 |
 | `device_mount.cpp` | `mount_device`/`unmount_device`：device → `BlockCache` → `exfat::Volume` → VFS。 | runtime volume mounting。 |
 | `partition.cpp` | MBR（含邏輯分割區）與 GPT（CRC32、備份標頭）解析，`io::Partition` 與 `vda1` 式的裝置發布。 | partition layer。 |
 | `rootfs_mount.cpp` | 將建置生成的 rootfs image 包成 RAM disk，掛載並註冊 `ram0`。 | early root storage bring-up。 |
@@ -472,6 +472,13 @@ device registry + VFS + shell + user programs
 | `find-uefi-firmware.sh` | 在常見路徑尋找 OVMF/AAVMF firmware。 | host firmware discovery。 |
 | `test-all.sh` | 跑 host tests，建置各 target，QEMU boot 後打字驗證 shell/VFS/IRQ。 | integration test runner。 |
 
+## `tools/`
+
+| 檔案 | 作用 | 架構地位 |
+| --- | --- | --- |
+| `make-exfat-image.py` | 依 exFAT 規格寫出測試映像（`exfat-basic.img`、`--clean` 時 `exfat-clean.img`）。 | test fixture generator。 |
+| `check-exfat-image.py` | 獨立的 exFAT 一致性檢查（小型 fsck）：校驗和、雜湊、FAT 鏈、位元圖。 | test oracle。 |
+
 ## `tests/`
 
 `tests/` 只測不需要 privileged instruction 的部分；完整開機行為由 `scripts/test-all.sh` 用 QEMU 驗證。
@@ -492,7 +499,9 @@ device registry + VFS + shell + user programs
 | `exfat_smoke.cpp` | 以 `tests/images/exfat-basic.img` 測 exFAT 掛載、查找、讀取、損壞拒絕與 `mount_device`。 | exFAT contract test。 |
 | `partition_smoke.cpp` | 測 CRC32、MBR/EBR、GPT 與備份標頭、非分割表的判斷、分割區命名。 | partition test。 |
 | `virtio_smoke.cpp` | 以假的 transport 扮演 virtio-blk 裝置，測啟動順序、I/O、唯讀、佇列繞回與分割區發布。 | virtio driver test。 |
-| `images/exfat-basic.img` | `tools/make-exfat-image.py` 依規格產生的 1 MiB exFAT 測試映像。 | test fixture。 |
+| `images/exfat-basic.img` | `tools/make-exfat-image.py` 依規格產生的 1 MiB exFAT 測試映像，含刻意損壞的項目組。 | test fixture。 |
+| `images/exfat-clean.img` | 同樣內容、沒有損壞的映像（`--clean`），寫入測試的起點。 | test fixture。 |
+| `exfat_write_smoke.cpp` | 經由 VFS 做每一種 exFAT 寫入並讀回，存下映像給 `tools/check-exfat-image.py` 檢查。 | exFAT write test。 |
 
 ## `docs/`
 

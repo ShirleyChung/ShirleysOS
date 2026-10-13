@@ -45,6 +45,7 @@ public:
     std::uint64_t block_count() const override { return disk_ != nullptr ? count_ : 0; }
     Result read_blocks(std::uint64_t first, std::size_t count, void* buffer) override;
     Result write_blocks(std::uint64_t first, std::size_t count, const void* buffer) override;
+    Result flush() override { return disk_ != nullptr ? disk_->flush() : Result{0, Error::None}; }
 
 private:
     BlockDevice* disk_ = nullptr;

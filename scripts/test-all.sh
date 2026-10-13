@@ -62,7 +62,7 @@ for target in arm64 x86_64 arm64_uefi x86_64_uefi; do
   printf "[%-11s] boot  ... " "$target"
   qemu=qemu-system-x86_64
   case "$target" in arm64*) qemu=qemu-system-aarch64 ;; esac
-  "$python" - "$qemu" "$artifact" "$target" "$firmware" "$root/tests/images/exfat-basic.img" <<'PY'
+  "$python" - "$qemu" "$artifact" "$target" "$firmware" "$root/tests/images/exfat-clean.img" <<'PY'
 import os, re, socket, struct, subprocess, sys, tempfile, threading, time
 
 qemu, artifact, target, firmware, exfat_image = sys.argv[1:]
@@ -400,6 +400,25 @@ expect(answer, 'Hello from exFAT!', 'case-insensitive exFAT lookup')
 answer = type_line('stat /mnt/big.bin')
 expect(answer, 'exfat', 'stat an exFAT file')
 expect(answer, '20000 bytes', 'stat an exFAT file')
+# 寫入：建立、讀回、建目錄、搬移、拒絕刪除非空目錄、刪除檔案，最後 sync。
+# QEMU 結束之後，這顆磁碟上的 exFAT 分割區會交給 tools/check-exfat-image.py。
+#
+# Writing: create, read back, make a directory, move, refuse to delete a
+# non-empty directory, delete a file, then sync. Once QEMU has exited, the
+# exFAT partition on this disk goes to tools/check-exfat-image.py.
+answer = type_line('echo written by shirleyos > /mnt/new.txt')
+answer = type_line('cat /mnt/new.txt')
+expect(answer, 'written by shirleyos', 'cat a file written to exFAT')
+answer = type_line('mkdir /mnt/made')
+answer = type_line('mv /mnt/new.txt /mnt/made/moved.txt')
+answer = type_line('ls /mnt/made')
+expect(answer, 'moved.txt', 'ls after mv')
+answer = type_line('rm /mnt/made')
+expect(answer, 'directory not empty', 'rm refuses a non-empty directory')
+answer = type_line('rm /mnt/big.bin')
+answer = type_line('stat /mnt/big.bin')
+expect(answer, 'not found', 'stat after rm')
+answer = type_line('sync')
 answer = type_line('umount /mnt')
 answer = type_line('ls /mnt')
 expect(answer, 'not found', 'ls after umount')
@@ -415,6 +434,29 @@ expect(answer, '\n/', 'pwd after a user program exited')
 process.kill()
 reader.join(timeout=2)
 out = output()
+
+# 卸載之後磁碟上的 exFAT 必須完全一致：位元圖、FAT 鏈、校驗和、名稱雜湊，
+# VolumeDirty 也已經清掉。
+# After the unmount the exFAT on the disk has to be fully consistent: bitmap,
+# FAT chains, checksums, name hashes, and VolumeDirty cleared.
+process.wait(timeout=10)
+with open(disk_file.name, 'rb') as handle:
+    handle.seek(2048 * 512)
+    partition = handle.read(len(exfat))
+partition_file = disk_file.name + '.exfat'
+with open(partition_file, 'wb') as handle:
+    handle.write(partition)
+checker = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(exfat_image)))),
+                       'tools', 'check-exfat-image.py')
+checked = subprocess.run([sys.executable, checker, partition_file, '--clean', '--tree'],
+                         capture_output=True, text=True)
+os.unlink(partition_file)
+if checked.returncode != 0:
+    print(checked.stdout + checked.stderr, file=sys.stderr)
+    raise SystemExit('The exFAT partition written by the guest is not consistent')
+if '/made/moved.txt 21 ' not in checked.stdout or '/big.bin' in checked.stdout:
+    print(checked.stdout, file=sys.stderr)
+    raise SystemExit("The guest's exFAT changes did not reach the disk")
 
 if target.endswith('_uefi'):
     stages = [

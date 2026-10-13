@@ -23,6 +23,13 @@ void* as_pointer(std::uint64_t value) {
     return reinterpret_cast<void*>(static_cast<std::uintptr_t>(value));
 }
 
+// 檔案系統操作的結果：成功是 0，失敗是錯誤碼取負號。
+// A file system operation's result: 0 on success, the negated error code on
+// failure.
+long long status(io::Error error) {
+    return error == io::Error::None ? 0 : -static_cast<long long>(error);
+}
+
 void copy(char* output, std::size_t capacity, const char* input) {
     if (capacity == 0) return;
     std::size_t i = 0;
@@ -139,6 +146,19 @@ void dispatch(Context& context) {
         context.result = failure == nullptr ? 0 : -1;
         return;
     }
+    case Number::MakeDirectory:
+        context.result = status(vfs::make_directory(static_cast<const char*>(as_pointer(context.arguments[0]))));
+        return;
+    case Number::Remove:
+        context.result = status(vfs::remove(static_cast<const char*>(as_pointer(context.arguments[0]))));
+        return;
+    case Number::Rename:
+        context.result = status(vfs::rename(static_cast<const char*>(as_pointer(context.arguments[0])),
+                                            static_cast<const char*>(as_pointer(context.arguments[1]))));
+        return;
+    case Number::Sync:
+        context.result = status(vfs::sync());
+        return;
     default:
         context.result = -1;
         return;

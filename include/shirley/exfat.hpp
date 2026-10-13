@@ -6,7 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 
-// exFAT，依照 Microsoft 公開的 exFAT 檔案系統規格實作，目前唯讀。
+// exFAT，依照 Microsoft 公開的 exFAT 檔案系統規格實作，可讀可寫。
 //
 //     boot region   開機磁區、延伸開機磁區、OEM 參數、開機校驗和；之後是備份
 //     FAT           每個叢集 32 位元的下一個叢集；連續檔案可以完全不用它
@@ -21,7 +21,7 @@
 // 項目會被一讀再讀。
 //
 // exFAT, implemented from Microsoft's published exFAT file system
-// specification, read-only for now.
+// specification, for reading and writing.
 //
 //     boot region   boot sector, extended boot sectors, OEM parameters, boot
 //                   checksum; a backup copy follows
@@ -69,12 +69,28 @@ public:
     // 驗證開機區（含校驗和）、讀出根目錄、載入並檢查大寫表。任何一步失敗都
     // 維持未掛載狀態。上限：裝置區塊與磁區都不超過 4 KiB。
     //
+    // writable 要求可寫的掛載。卷冊上次沒有乾淨地卸載（VolumeDirty）、有兩份
+    // FAT（TexFAT），或裝置拒絕寫入時，仍然會掛載，但是唯讀——read_only() 說得出
+    // 是哪一種。可寫的掛載會立刻把 VolumeDirty 寫到裝置上，直到 unmount() 才清掉，
+    // 所以中途斷電的卷冊下次會被認出來。
+    //
     // Validate the boot region (checksum included), read the root directory,
     // and load and check the up-case table. Any failure leaves the volume
     // unmounted. Limits: device blocks and sectors of at most 4 KiB.
-    MountError mount(io::BlockDevice& device);
+    //
+    // writable asks for a writable mount. A volume that was not cleanly
+    // unmounted last time (VolumeDirty), one with two FATs (TexFAT), or a device
+    // that refuses writes is still mounted, but read-only — read_only() tells.
+    // A writable mount puts VolumeDirty on the device at once and clears it
+    // only in unmount(), so a volume interrupted by a power cut is recognised
+    // next time.
+    MountError mount(io::BlockDevice& device, bool writable = false);
+    // 寫回所有修改、清掉 VolumeDirty，然後釋放一切。
+    // Write back every modification, clear VolumeDirty, then release
+    // everything.
     void unmount();
     bool mounted() const { return device_ != nullptr; }
+    bool read_only() const { return !writable_; }
 
     // 卷冊標籤（UTF-8，沒有標籤時為空字串）與幾個開機磁區欄位，供診斷使用。
     // The volume label (UTF-8, empty when there is none) and a few boot sector
@@ -88,7 +104,9 @@ public:
     // not care, but write support later will.
     bool dirty() const { return dirty_; }
 
-    const char* name() const override { return "exfat"; }
+    // 唯讀掛載時名稱標上 (ro)，`mount` 列出來才看得出差別。
+    // A read-only mount is named with (ro), so `mount` shows the difference.
+    const char* name() const override { return writable_ ? "exfat" : "exfat (ro)"; }
     bool root(vfs::Node& node) override;
     bool lookup(const vfs::Node& directory, const char* name, vfs::Node& result) override;
     bool list(const vfs::Node& directory, std::size_t position, vfs::Node& child) override;
@@ -97,6 +115,13 @@ public:
     io::Result write(const vfs::Node& file, std::uint64_t offset, const void* buffer,
                      std::size_t length) override;
     bool writable(const vfs::Node& node) const override;
+    io::Error create(const vfs::Node& directory, const char* name, vfs::Type type,
+                     vfs::Node& result) override;
+    io::Error remove(const vfs::Node& directory, const char* name) override;
+    io::Error rename(const vfs::Node& from_directory, const char* from_name,
+                     const vfs::Node& to_directory, const char* to_name) override;
+    io::Error truncate(const vfs::Node& file, std::uint64_t size) override;
+    io::Error sync() override;
 
     // 一串叢集：檔案或目錄的內容。供實作與測試使用。
     // A run of clusters: the content of a file or directory. For the
@@ -123,6 +148,38 @@ public:
     };
 
 private:
+    // 一個節點在磁碟上的位置：它所在的目錄，以及它自己的項目組。根目錄沒有
+    // 項目組，root 為 true。
+    //
+    // Where a node lives on disk: the directory holding it, and its own entry
+    // set. The root directory has no entry set, and root is true.
+    struct Location {
+        Stream parent;
+        Entry entry;
+        bool root = false;
+    };
+
+    void release();
+    bool locate(const vfs::Node& node, Location& where);
+    bool find(const Stream& directory, const char* name, Entry& entry);
+    std::uint16_t name_hash(const char16_t* name, std::size_t length) const;
+
+    io::Result write_bytes(std::uint64_t offset, const void* buffer, std::size_t length);
+    io::Result write_stream(const Stream& stream, std::uint64_t offset, const void* buffer,
+                            std::size_t length);
+    io::Error zero_stream(const Stream& stream, std::uint64_t offset, std::uint64_t length);
+    bool fat_set(std::uint32_t cluster, std::uint32_t value);
+    bool bitmap_test(std::uint32_t cluster, bool& used);
+    bool bitmap_set(std::uint32_t cluster, bool used);
+    io::Error allocate_cluster(std::uint32_t prefer, std::uint32_t& cluster);
+    io::Error release_clusters(Stream& stream, std::uint64_t keep, std::uint64_t current);
+    io::Error resize(Stream& stream, std::uint64_t clusters);
+    io::Error store(const Stream& parent, const Entry& entry);
+    io::Error insert(const vfs::Node& directory, std::uint8_t* set, std::size_t entries,
+                     Stream& parent, std::uint32_t& slot);
+    io::Error erase(const Stream& parent, std::uint32_t slot);
+    bool set_volume_flags(bool dirty);
+
     io::Result read_bytes(std::uint64_t offset, void* buffer, std::size_t length);
     bool fat_next(std::uint32_t cluster, std::uint32_t& next);
     bool cluster_at(const Stream& stream, std::uint64_t index, std::uint32_t& cluster);
@@ -148,7 +205,15 @@ private:
     std::uint32_t cluster_shift_ = 0;
     std::uint32_t serial_ = 0;
     Stream root_{};
+    // 配置位元圖本身的位置。 / Where the allocation bitmap itself lives.
+    Stream bitmap_{};
+    std::uint16_t volume_flags_ = 0;
+    // 找空叢集時從這裡開始，免得每次都從頭掃描位元圖。
+    // Where the search for a free cluster starts, so the bitmap is not scanned
+    // from the beginning every time.
+    std::uint32_t allocation_hint_ = 2;
     bool dirty_ = false;
+    bool writable_ = false;
     char label_[3 * 11 + 1]{};
     // 最近一次 cluster_at() 走到的位置。循序讀取一個靠 FAT 串起來的檔案時，
     // 下一次就從這裡接著走，而不是每次都從第一個叢集重新數。

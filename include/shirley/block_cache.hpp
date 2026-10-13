@@ -75,6 +75,8 @@ public:
     std::uint64_t block_count() const override;
     Result read_blocks(std::uint64_t first, std::size_t count, void* buffer) override;
     Result write_blocks(std::uint64_t first, std::size_t count, const void* buffer) override;
+    // 等同 sync()。 / The same as sync().
+    Result flush() override { return sync(); }
 
     // 取得區塊的緩衝區並把它釘住，直到對應的 release()。所有緩衝區都被釘住、
     // 區塊超出範圍或裝置讀取失敗時回傳 nullptr，原因寫進 error（若不為空）。

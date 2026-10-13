@@ -31,6 +31,13 @@ enum class Number : std::uint64_t {
     // written into request->reason.
     MountDevice = 12, // mount_device(request)
     Unmount = 13,     // unmount(path, reason, capacity)
+    // 下面四個成功時回傳 0，失敗時回傳 io::Error 的值取負號（見 user_api.hpp）。
+    // The four below return 0 on success and the negated io::Error value on
+    // failure (see user_api.hpp).
+    MakeDirectory = 14, // mkdir(path)
+    Remove = 15,        // remove(path)
+    Rename = 16,        // rename(from, to)
+    Sync = 17,          // sync()
 };
 
 // Architecture adapters fill arguments in the common syscall register order.

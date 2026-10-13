@@ -18,6 +18,13 @@ public:
     // partial transfer.
     virtual Result read_blocks(std::uint64_t first, std::size_t count, void* buffer) = 0;
     virtual Result write_blocks(std::uint64_t first, std::size_t count, const void* buffer) = 0;
+    // 把還留在中間層（例如區塊快取）的寫入送到裝置上。直接寫入裝置的實作沒有
+    // 東西要送，預設什麼都不做。
+    //
+    // Push writes still held in an intermediate layer, such as a block cache,
+    // down to the device. An implementation that writes straight through has
+    // nothing to push and does nothing by default.
+    virtual Result flush() { return {0, Error::None}; }
 protected:
     ~BlockDevice() = default;
 };

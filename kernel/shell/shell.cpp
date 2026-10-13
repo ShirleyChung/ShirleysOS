@@ -425,7 +425,9 @@ void command_echo() {
         write(line_out);
         return;
     }
-    const auto descriptor = vfs::open(target, vfs::OpenFlags::Write, working_directory);
+    const auto descriptor = vfs::open(
+        target, vfs::OpenFlags::Write | vfs::OpenFlags::Create | vfs::OpenFlags::Truncate,
+        working_directory);
     if (descriptor < 0) {
         write("echo: ");
         write(target);
