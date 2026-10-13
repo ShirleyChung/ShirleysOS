@@ -3,6 +3,7 @@
 #include "shirley/arch.hpp"
 #include "shirley/arch/x86_64/port_io.hpp"
 #include "shirley/console.hpp"
+#include "shirley/platform/pc/pci.hpp"
 #include "shirley/platform/pc/pic.hpp"
 #include "shirley/platform/pc/pit.hpp"
 #include "shirley/platform/pc/ps2_keyboard.hpp"
@@ -62,6 +63,10 @@ void initialize(const BootInfo& boot_info) {
         // boot loader.
     platform_capabilities.framebuffer = boot_info.framebuffer.address != 0;
 }
+
+// QEMU 的磁碟以 virtio-blk-pci 出現在 PCI 匯流排 0 上。
+// QEMU's disks appear on PCI bus 0 as virtio-blk-pci.
+void initialize_storage() { pc::virtio_pci_probe(); }
 
 const char* name() { return "QEMU x86_64 (UEFI)"; }
 const char* machine() { return "QEMU PC with OVMF UEFI firmware"; }

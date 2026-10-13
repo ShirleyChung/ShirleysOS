@@ -1,5 +1,6 @@
 #pragma once
 
+#include "shirley/block_device.hpp"
 #include "shirley/io.hpp"
 
 #include <cstddef>
@@ -285,6 +286,31 @@ public:
     // data; those two things do not mean the same thing.
     io::Result read(void* buffer, std::size_t length) override;
     io::Result write(const void* buffer, std::size_t length) override;
+
+private:
+    Device* device_ = nullptr;
+};
+
+// 再反過來一次：把註冊表裡的區塊裝置看成 io::BlockDevice。分割區、區塊快取
+// 與檔案系統都只認得 BlockDevice，而它們不應該需要知道一個磁碟是怎麼登記的
+// ——它的操作表可能是 block_operations，也可能是驅動程式自己的。
+//
+// And the other way once more: see a block device from the registry as an
+// io::BlockDevice. Partitions, the block cache and the file systems know only
+// BlockDevice, and they should not need to know how a disk was registered —
+// its operation table may be block_operations or a driver's own.
+class BlockView final : public io::BlockDevice {
+public:
+    constexpr BlockView() = default;
+    explicit constexpr BlockView(Device* device) : device_(device) {}
+    void bind(Device* device) { device_ = device; }
+    Device* device() const { return device_; }
+    // 未繫結時大小為零，讀寫回傳 Unsupported。
+    // Unbound, it has zero size and reads and writes report Unsupported.
+    std::size_t block_size() const override;
+    std::uint64_t block_count() const override;
+    io::Result read_blocks(std::uint64_t first, std::size_t count, void* buffer) override;
+    io::Result write_blocks(std::uint64_t first, std::size_t count, const void* buffer) override;
 
 private:
     Device* device_ = nullptr;

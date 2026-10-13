@@ -1,6 +1,7 @@
 #include "shirley/syscall.hpp"
 
 #include "shirley/arch.hpp"
+#include "shirley/device_mount.hpp"
 #include "shirley/process.hpp"
 #include "shirley/platform.hpp"
 #include "shirley/user_api.hpp"
@@ -115,6 +116,27 @@ void dispatch(Context& context) {
         if (fd < 0 || bytes == 0 || bytes > request->capacity) context.result = -1;
         else { const auto result = vfs::block_read(fd, request->block, 1, request->buffer); context.result = result ? static_cast<long long>(result.transferred) : -1; }
         if (fd >= 0) vfs::close(fd);
+        return;
+    }
+    case Number::MountDevice: {
+        auto* request = static_cast<user_api::MountRequest*>(as_pointer(context.arguments[0]));
+        if (request == nullptr || request->device == nullptr || request->path == nullptr) {
+            context.result = -1;
+            return;
+        }
+        const char* failure = fs::mount_device(request->device, request->path);
+        if (failure != nullptr && request->reason != nullptr)
+            copy(request->reason, static_cast<std::size_t>(request->capacity), failure);
+        context.result = failure == nullptr ? 0 : -1;
+        return;
+    }
+    case Number::Unmount: {
+        const auto* path = static_cast<const char*>(as_pointer(context.arguments[0]));
+        auto* reason = static_cast<char*>(as_pointer(context.arguments[1]));
+        const char* failure = fs::unmount_device(path);
+        if (failure != nullptr && reason != nullptr)
+            copy(reason, static_cast<std::size_t>(context.arguments[2]), failure);
+        context.result = failure == nullptr ? 0 : -1;
         return;
     }
     default:

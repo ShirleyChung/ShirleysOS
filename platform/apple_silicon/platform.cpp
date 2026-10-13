@@ -39,6 +39,10 @@ void initialize(const BootInfo& boot_info) {
     platform_capabilities.framebuffer = boot_info.framebuffer.address != 0;
 }
 
+// Apple 的儲存控制器（ANS／NVMe）排在 M8。 / Apple's storage controller
+// (ANS/NVMe) is scheduled for M8.
+void initialize_storage() {}
+
 const char* name() { return "Apple Silicon"; }
 const char* machine() { return "Apple Silicon Mac with iBoot firmware"; }
 const Capabilities& capabilities() { return platform_capabilities; }

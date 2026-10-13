@@ -262,4 +262,22 @@ io::Result Stream::write(const void* buffer, std::size_t length) {
     return device_->write(buffer, length);
 }
 
+std::size_t BlockView::block_size() const {
+    return device_ != nullptr ? device_->block_size() : 0;
+}
+
+std::uint64_t BlockView::block_count() const {
+    return device_ != nullptr ? device_->block_count() : 0;
+}
+
+io::Result BlockView::read_blocks(std::uint64_t first, std::size_t count, void* buffer) {
+    if (device_ == nullptr) return {0, io::Error::Unsupported};
+    return device_->block_read(first, count, buffer);
+}
+
+io::Result BlockView::write_blocks(std::uint64_t first, std::size_t count, const void* buffer) {
+    if (device_ == nullptr) return {0, io::Error::Unsupported};
+    return device_->block_write(first, count, buffer);
+}
+
 } // namespace shirley::device

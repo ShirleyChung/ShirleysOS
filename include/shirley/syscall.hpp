@@ -26,6 +26,11 @@ enum class Number : std::uint64_t {
     Exec = 9,   // exec(path), returns the child's status
     Mount = 10, // mount_info(position, info)
     BlockRead = 11, // block_read(request)
+    // 把區塊裝置上的檔案系統掛上去；失敗時把原因寫進 request->reason。
+    // Mount the file system on a block device; on failure the reason is
+    // written into request->reason.
+    MountDevice = 12, // mount_device(request)
+    Unmount = 13,     // unmount(path, reason, capacity)
 };
 
 // Architecture adapters fill arguments in the common syscall register order.

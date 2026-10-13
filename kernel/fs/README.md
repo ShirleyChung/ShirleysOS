@@ -126,3 +126,12 @@ and mounts that into the VFS. `umount` refuses while files are open.
 
 The test image `tests/images/exfat-basic.img` is written by
 `tools/make-exfat-image.py`, which shares no code with this driver.
+
+## Partitions
+
+`partition.cpp` reads MBR (logical partitions included) and GPT (CRC-32
+checked, falling back to the backup header) and publishes each partition as a
+block device of its own — `vda1`, or `ram0p1` when the disk's name ends in a
+digit. A block 0 that ends in 0x55AA but is really a file system's boot
+sector is not mistaken for a partition table, so a disk formatted end to end
+is simply mounted whole.

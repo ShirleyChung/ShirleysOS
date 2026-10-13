@@ -6,6 +6,7 @@
 #include "shirley/platform/arm/generic_timer.hpp"
 #include "shirley/platform/arm/gicv2.hpp"
 #include "shirley/platform/arm/pl011.hpp"
+#include "shirley/platform/arm/virtio_mmio.hpp"
 
 namespace shirley::platform {
 Capabilities platform_capabilities{};
@@ -58,6 +59,13 @@ void initialize(const BootInfo& boot_info) {
     platform_capabilities.framebuffer = boot_info.framebuffer.address != 0;
 }
 
+// QEMU virt 的磁碟以 virtio-mmio 出現在固定的插槽裡。
+// QEMU virt's disks appear as virtio-mmio in fixed slots.
+void initialize_storage() {
+    arm::virtio_mmio_probe(arm::virt_virtio_mmio_base, arm::virt_virtio_mmio_slots,
+                           arm::virt_virtio_mmio_stride);
+}
+
 const char* name() { return "QEMU ARM64 (UEFI)"; }
 const char* machine() { return "QEMU virt with EDK2 UEFI firmware"; }
 const Capabilities& capabilities() { return platform_capabilities; }
@@ -91,6 +99,10 @@ constexpr MmioRegion regions[] = {
     {virt_uart, 0x1000},
     {virt_gic_distributor, 0x10000},
     {virt_gic_cpu_interface, 0x2000},
+    // virtio-mmio 插槽。user 行程執行期間的系統呼叫一樣要讀磁碟。
+    // The virtio-mmio slots. A syscall made while a user process runs reads
+    // the disk just the same.
+    {arm::virt_virtio_mmio_base, arm::virt_virtio_mmio_slots * arm::virt_virtio_mmio_stride},
 };
 
 } // namespace

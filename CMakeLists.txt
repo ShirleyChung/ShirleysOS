@@ -92,6 +92,7 @@ add_custom_command(OUTPUT ${SHIRLEY_ROOTFS_SOURCE}
 # 與架構、平台都無關的核心程式碼。
 # Kernel code that depends on neither the architecture nor the platform.
 set(SHIRLEY_KERNEL_SOURCES
+  kernel/checksum/crc32.cpp
   kernel/console/console.cpp
   kernel/console/console_input.cpp
   kernel/device/device.cpp
@@ -106,6 +107,7 @@ set(SHIRLEY_KERNEL_SOURCES
   kernel/fs/shrfs_vfs.cpp
   kernel/fs/exfat.cpp
   kernel/fs/device_mount.cpp
+  kernel/fs/partition.cpp
   kernel/fs/devfs.cpp
   kernel/fs/vfs.cpp
   kernel/fs/rootfs_mount.cpp
@@ -129,7 +131,8 @@ set(SHIRLEY_KERNEL_SOURCES
 # Hardware-independent device driver logic, shared by the host build and the
 # kernel build.
 set(SHIRLEY_DRIVER_SOURCES
-  drivers/input/scancode.cpp)
+  drivers/input/scancode.cpp
+  drivers/virtio/block.cpp)
 
 # 韌體資料格式，可被多個機器平台共用。
 # Firmware data formats, shared by several machine platforms.
@@ -143,6 +146,7 @@ if(SHIRLEY_ARCH STREQUAL host)
   # The host target builds only the architecture-neutral pieces that can be
   # tested on the development machine.
   add_library(shirley-kernel-core STATIC
+    kernel/checksum/crc32.cpp
     kernel/console/console.cpp
     kernel/console/console_input.cpp
     kernel/device/device.cpp
@@ -153,6 +157,7 @@ if(SHIRLEY_ARCH STREQUAL host)
     kernel/fs/shrfs_vfs.cpp
     kernel/fs/exfat.cpp
     kernel/fs/device_mount.cpp
+    kernel/fs/partition.cpp
     kernel/fs/devfs.cpp
     kernel/fs/vfs.cpp
     kernel/fs/rootfs_mount.cpp
@@ -177,7 +182,8 @@ if(SHIRLEY_ARCH STREQUAL host)
 
   enable_testing()
   foreach(test host_smoke core_services_smoke platform_model_smoke boot_loader_smoke input_smoke
-               file_system_smoke device_smoke vfs_smoke heap_smoke block_cache_smoke)
+               file_system_smoke device_smoke vfs_smoke heap_smoke block_cache_smoke
+               partition_smoke virtio_smoke)
     string(REPLACE "_" "-" test_name ${test})
     add_executable(shirley-${test_name} tests/${test}.cpp)
     target_link_libraries(shirley-${test_name} PRIVATE shirley-kernel-core)
@@ -232,8 +238,18 @@ elseif(SHIRLEY_ARCH STREQUAL arm64)
     arch/arm64/entry.S
     arch/arm64/exception.S)
   # 同樣的理由：核心程式碼不得使用 FP/SIMD 暫存器。
+  #
+  # -mstrict-align：直接開機時核心在 MMU 關閉的狀態下執行，所有記憶體都被當成
+  # Device 記憶體，未對齊的存取一律觸發對齊例外。編譯器平常會把逐位元組解碼
+  # 磁碟格式的程式（le32 之類）合併成一次寬的載入，那在 MMU 關閉時就會當掉。
+  #
   # Same reason: kernel code must not touch the FP/SIMD registers.
-  set(SHIRLEY_ARCH_FLAGS -mgeneral-regs-only)
+  #
+  # -mstrict-align: booted directly, the kernel runs with the MMU off, where all
+  # memory is Device memory and any unaligned access takes an alignment fault.
+  # The compiler would otherwise merge byte-by-byte decoding of on-disk formats
+  # (le32 and the like) into one wide load, which faults with the MMU off.
+  set(SHIRLEY_ARCH_FLAGS -mgeneral-regs-only -mstrict-align)
   set(SHIRLEY_EFI_TARGET aarch64-unknown-windows)
   set(SHIRLEY_EFI_MACHINE arm64)
   set(SHIRLEY_EFI_FLAGS)
@@ -309,6 +325,8 @@ if(SHIRLEY_PLATFORM STREQUAL qemu_x86_64)
   set(SHIRLEY_PLATFORM_SOURCES
     platform/qemu_x86_64/boot_protocol.cpp
     platform/qemu_x86_64/platform.cpp
+    platform/pc/pci.cpp
+    platform/pc/virtio_pci.cpp
     platform/pc/serial_console.cpp
     platform/pc/serial_device.cpp
     platform/pc/serial_input.cpp
@@ -324,6 +342,8 @@ elseif(SHIRLEY_PLATFORM STREQUAL qemu_x86_64_uefi)
   set(SHIRLEY_PLATFORM_SOURCES
     platform/qemu_x86_64_uefi/boot_protocol.cpp
     platform/qemu_x86_64_uefi/platform.cpp
+    platform/pc/pci.cpp
+    platform/pc/virtio_pci.cpp
     platform/pc/serial_console.cpp
     platform/pc/serial_device.cpp
     platform/pc/serial_input.cpp
@@ -340,6 +360,8 @@ elseif(SHIRLEY_PLATFORM STREQUAL qemu_arm64)
     platform/arm/gicv2.cpp
     platform/arm/generic_timer.cpp
     platform/arm/pl011_input.cpp
+    platform/arm/virtio_mmio.cpp
+    drivers/virtio/block.cpp
     ${SHIRLEY_FIRMWARE_FDT})
 elseif(SHIRLEY_PLATFORM STREQUAL qemu_arm64_uefi)
   # 同一台 QEMU virt，只是換成 EDK2 韌體，因此沿用同一顆 PL011 驅動程式與
@@ -352,7 +374,9 @@ elseif(SHIRLEY_PLATFORM STREQUAL qemu_arm64_uefi)
     platform/qemu_arm64_uefi/platform.cpp
     platform/arm/gicv2.cpp
     platform/arm/generic_timer.cpp
-    platform/arm/pl011_input.cpp)
+    platform/arm/pl011_input.cpp
+    platform/arm/virtio_mmio.cpp
+    drivers/virtio/block.cpp)
   set(SHIRLEY_UEFI_PLATFORM ON)
 elseif(SHIRLEY_PLATFORM STREQUAL apple_silicon)
   set(SHIRLEY_PLATFORM_SOURCES

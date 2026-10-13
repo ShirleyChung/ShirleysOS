@@ -112,6 +112,8 @@ device registry + VFS + shell + user programs
 | `serial_console.cpp` | COM1 serial console output backend。 | PC console backend。 |
 | `serial_input.cpp` | COM1 IRQ4 receive path。 | PC serial input driver。 |
 | `serial_device.cpp` | 把 COM1 發布成 `uart0` device。 | device registry bridge。 |
+| `pci.cpp` | 0xCF8/0xCFC 設定空間存取與匯流排 0 掃描。 | PC PCI enumeration。 |
+| `virtio_pci.cpp` | legacy virtio-PCI transport（BAR0 I/O port），把 virtio-blk 交給 `drivers/virtio`。 | virtio transport。 |
 
 ### `platform/arm/`
 
@@ -121,6 +123,7 @@ device registry + VFS + shell + user programs
 | `gicv2.cpp` | GICv2 distributor/CPU interface，demultiplex device IRQ。 | ARM interrupt controller backend。 |
 | `generic_timer.cpp` | ARM architected timer，PPI 30，100 Hz。 | ARM timer driver。 |
 | `pl011_input.cpp` | PL011 receive IRQ 與 `uart0` input device。 | ARM serial input driver。 |
+| `virtio_mmio.cpp` | legacy virtio-mmio transport，探測 QEMU virt 的 32 個插槽。 | virtio transport。 |
 
 ### `platform/qemu_x86_64/`
 
@@ -276,6 +279,7 @@ device registry + VFS + shell + user programs
 | `devfs.cpp` | 把 device registry expose 成 `/dev`。 | device namespace filesystem。 |
 | `exfat.cpp` | 唯讀 exFAT：boot checksum、FAT/NoFatChain、entry set、大寫表、不分大小寫查找。 | exFAT filesystem driver。 |
 | `device_mount.cpp` | `mount_device`/`unmount_device`：device → `BlockCache` → `exfat::Volume` → VFS。 | runtime volume mounting。 |
+| `partition.cpp` | MBR（含邏輯分割區）與 GPT（CRC32、備份標頭）解析，`io::Partition` 與 `vda1` 式的裝置發布。 | partition layer。 |
 | `rootfs_mount.cpp` | 將建置生成的 rootfs image 包成 RAM disk，掛載並註冊 `ram0`。 | early root storage bring-up。 |
 
 ### `kernel/io/`
@@ -318,6 +322,7 @@ device registry + VFS + shell + user programs
 | --- | --- | --- |
 | `README.md` | driver 分層規則。 | driver boundary doc。 |
 | `drivers/block/ram_disk.cpp` | 以一段記憶體實作 `BlockDevice`。 | early storage backend。 |
+| `drivers/virtio/block.cpp` | split virtqueue 與 virtio-blk 請求，經由 `virtio::Transport`；登記 `vdX` 並發布分割區。 | virtio-blk driver。 |
 | `drivers/input/README.md` | input driver 分層說明。 | input driver doc。 |
 | `drivers/input/scancode.cpp` | PS/2 scancode set 1 到 ASCII 的硬體無關解碼。 | testable input translation。 |
 
@@ -485,6 +490,8 @@ device registry + VFS + shell + user programs
 | `heap_smoke.cpp` | 測 heap 配置、對齊、合併、錯誤釋放與碎片化。 | heap contract test。 |
 | `block_cache_smoke.cpp` | 測快取命中、write-back、LRU、pin、錯誤處理，以及 SHRFS 經過快取掛載。 | block cache test。 |
 | `exfat_smoke.cpp` | 以 `tests/images/exfat-basic.img` 測 exFAT 掛載、查找、讀取、損壞拒絕與 `mount_device`。 | exFAT contract test。 |
+| `partition_smoke.cpp` | 測 CRC32、MBR/EBR、GPT 與備份標頭、非分割表的判斷、分割區命名。 | partition test。 |
+| `virtio_smoke.cpp` | 以假的 transport 扮演 virtio-blk 裝置，測啟動順序、I/O、唯讀、佇列繞回與分割區發布。 | virtio driver test。 |
 | `images/exfat-basic.img` | `tools/make-exfat-image.py` 依規格產生的 1 MiB exFAT 測試映像。 | test fixture。 |
 
 ## `docs/`

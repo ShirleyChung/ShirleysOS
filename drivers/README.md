@@ -4,8 +4,14 @@ Generic driver contracts live here; machine-specific implementations live in
 their platform directory unless they are reusable device drivers.
 
 `BlockDevice` is the sector-oriented disk contract. `RamDisk` supplies a
-hardware-independent implementation for early kernel use and host tests; ATA,
-NVMe, and virtio implementations remain platform drivers. The root file system
+hardware-independent implementation for early kernel use and host tests; ATA
+and NVMe implementations remain platform drivers.
+
+`virtio/block.cpp` is the protocol half of virtio-blk: the split virtqueue and
+the request format, reaching the device only through a `virtio::Transport`.
+The transports that touch registers stay in `platform/` — legacy virtio-PCI in
+`platform/pc/virtio_pci.cpp`, virtio-mmio in `platform/arm/virtio_mmio.cpp` —
+and the host test drives the protocol half against a fake device. The root file system
 runs on a `RamDisk` today, which is what lets `kernel/fs/` be written against
 the block interface before any real disk driver exists.
 

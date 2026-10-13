@@ -13,10 +13,11 @@ layering.
 | --- | --- |
 | 0.1 核心堆積 | 完成：`kernel/memory/heap.cpp`，`.bss` 中 1 MiB。 |
 | 0.2 區塊快取 | 完成：`kernel/io/block_cache.cpp`（`io::BlockCache`）。 |
-| 0.3 分割表、0.4 磁碟驅動 | 未開始。 |
+| 0.3 分割表 | 完成：`kernel/fs/partition.cpp`，MBR（含邏輯分割區）與 GPT。 |
+| 0.4 磁碟驅動 | 完成（QEMU）：`drivers/virtio/block.cpp`，x86 virtio-PCI、ARM virtio-mmio。 |
 | 0.5 VFS 寫入擴充 | 未開始。 |
 | 0.6 名稱與路徑 | 完成：名稱 255 位元組、路徑 512 位元組；`kernel/text/utf.cpp`。 |
-| 0.7 掛載指令 | 部分：shell `mount <dev> <path>`／`umount`，目前只認 exFAT。 |
+| 0.7 掛載指令 | 完成：`/bin/init` 與核心 shell 的 `mount <dev> <path>`／`umount`（系統呼叫 12、13），目前只認 exFAT。 |
 | 0.8 mount 物件化 | 完成：exFAT 是物件，`kernel/fs/device_mount.cpp` 管理實例。 |
 | FS-1 exFAT 唯讀 | 完成：`kernel/fs/exfat.cpp`；測試映像由 `tools/make-exfat-image.py` 產生。 |
 

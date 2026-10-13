@@ -62,10 +62,10 @@ for target in arm64 x86_64 arm64_uefi x86_64_uefi; do
   printf "[%-11s] boot  ... " "$target"
   qemu=qemu-system-x86_64
   case "$target" in arm64*) qemu=qemu-system-aarch64 ;; esac
-  "$python" - "$qemu" "$artifact" "$target" "$firmware" <<'PY'
-import re, socket, subprocess, sys, threading, time
+  "$python" - "$qemu" "$artifact" "$target" "$firmware" "$root/tests/images/exfat-basic.img" <<'PY'
+import os, re, socket, struct, subprocess, sys, tempfile, threading, time
 
-qemu, artifact, target, firmware = sys.argv[1:]
+qemu, artifact, target, firmware, exfat_image = sys.argv[1:]
 x86 = not target.startswith('arm64')
 
 # x86 目標會透過 QEMU 監控介面注入真正的按鍵事件，藉此驗證中斷驅動的鍵盤
@@ -108,6 +108,29 @@ else:
 # UEFI 韌體本身要花數秒才會交出控制權，因此給它比較長的時間。
 # UEFI firmware needs several seconds before it hands over control, so it gets
 # a longer timeout.
+# 一顆 virtio 磁碟：MBR 分割表，第一個分割區從磁區 2048 開始，內容是 exFAT 的
+# 測試映像。x86 上 QEMU 把它接成 virtio-blk-pci；ARM virt 上 -drive if=virtio
+# 也會是 PCI，所以明確要求 virtio-mmio 的 virtio-blk-device。
+#
+# One virtio disk: an MBR partition table whose first partition starts at
+# sector 2048 and holds the exFAT test image. On x86 QEMU attaches it as
+# virtio-blk-pci; on ARM virt -drive if=virtio would be PCI too, so the
+# virtio-mmio virtio-blk-device is asked for explicitly.
+with open(exfat_image, 'rb') as handle:
+    exfat = handle.read()
+disk = bytearray(4 * 1024 * 1024)
+disk[446:462] = struct.pack('<B3sB3sII', 0, bytes(3), 0x07, bytes(3), 2048, len(exfat) // 512)
+disk[510:512] = b'\x55\xaa'
+disk[2048 * 512:2048 * 512 + len(exfat)] = exfat
+disk_file = tempfile.NamedTemporaryFile(prefix='shirley-disk-', suffix='.img', delete=False)
+disk_file.write(disk)
+disk_file.close()
+if x86:
+    args += ['-drive', 'if=virtio,format=raw,file=' + disk_file.name]
+else:
+    args += ['-drive', 'if=none,id=disk0,format=raw,file=' + disk_file.name,
+             '-device', 'virtio-blk-device,drive=disk0']
+
 timeout = 30 if target.endswith('_uefi') else 8
 prompt = 'shirley:/$'
 collected = []
@@ -351,6 +374,35 @@ answer = type_line('exec /bin/hello', settle=2.5)
 expect(answer, "Hello! Shirley's OS.", 'exec /bin/hello greeting')
 expect(answer, 'ShirleyOS', 'exec /bin/hello read /etc/version from userspace')
 expect(answer, 'exited with status 0', 'exec /bin/hello exit status')
+
+# virtio-blk、MBR 分割表與 exFAT：磁碟在開機時被找到，分割區變成 vda1，掛上去
+# 之後可以列目錄、不分大小寫地讀檔；整顆磁碟本身不是 exFAT，必須被拒絕。
+#
+# virtio-blk, the MBR partition table and exFAT: the disk is found at boot, its
+# partition becomes vda1, and once mounted it lists and reads files
+# case-insensitively; the whole disk is not exFAT and has to be refused.
+if '[virtio] vda: 4 MiB, 1 partition' not in output():
+    fail('The virtio disk or its partition was not found at boot')
+answer = type_line('ls /dev')
+expect(answer, 'vda1', 'ls /dev shows the partition')
+answer = type_line('mount /dev/vda /x')
+expect(answer, 'not an exFAT volume', 'mount refuses the partitioned disk itself')
+answer = type_line('mount /dev/vda1 /mnt')
+answer = type_line('mount')
+expect(answer, '/mnt  exfat', 'mount lists the exFAT volume')
+answer = type_line('ls /mnt')
+expect(answer, 'README.TXT', 'ls /mnt')
+expect(answer, 'docs/', 'ls /mnt')
+answer = type_line('cat /mnt/docs/sub/deep.txt')
+expect(answer, 'deep inside', 'cat a nested exFAT file')
+answer = type_line('cat /mnt/readme.txt')
+expect(answer, 'Hello from exFAT!', 'case-insensitive exFAT lookup')
+answer = type_line('stat /mnt/big.bin')
+expect(answer, 'exfat', 'stat an exFAT file')
+expect(answer, '20000 bytes', 'stat an exFAT file')
+answer = type_line('umount /mnt')
+answer = type_line('ls /mnt')
+expect(answer, 'not found', 'ls after umount')
 if answer.count(prompt) < 1:
     fail('The shell prompt did not return after the program exited')
 
@@ -405,6 +457,7 @@ if 'Root file system: mount failed' in out or 'Root file system:' not in out:
 if "CPU exception" in out:
     print(out, file=sys.stderr)
     raise SystemExit(1)
+os.unlink(disk_file.name)
 print('PASS (keyboard %s)' % keyboard if x86 else 'PASS')
 PY
 done

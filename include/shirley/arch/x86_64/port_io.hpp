@@ -26,6 +26,14 @@ inline std::uint16_t inw(std::uint16_t port) {
     asm volatile("inw %1, %0" : "=a"(value) : "Nd"(port));
     return value;
 }
+inline void outl(std::uint16_t port, std::uint32_t value) {
+    asm volatile("outl %0, %1" : : "a"(value), "Nd"(port));
+}
+inline std::uint32_t inl(std::uint16_t port) {
+    std::uint32_t value;
+    asm volatile("inl %1, %0" : "=a"(value) : "Nd"(port));
+    return value;
+}
 // 對慢速的傳統裝置寫入後短暫等待。
 // Give a slow legacy device a moment to settle after a write.
 inline void io_wait() { outb(0x80, 0); }

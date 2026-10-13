@@ -9,29 +9,6 @@
 namespace shirley::fs {
 namespace {
 
-// 把裝置註冊表裡的區塊裝置當成 io::BlockDevice。檔案系統與快取只認得後者，
-// 而它們不應該需要知道裝置是怎麼登記的。
-//
-// A block device from the device registry, seen as an io::BlockDevice. The
-// file systems and the cache know only the latter, and they should not need
-// to know how a device was registered.
-class DeviceBlocks final : public io::BlockDevice {
-public:
-    constexpr DeviceBlocks() = default;
-    void attach(device::Device* device) { device_ = device; }
-    std::size_t block_size() const override { return device_->block_size(); }
-    std::uint64_t block_count() const override { return device_->block_count(); }
-    io::Result read_blocks(std::uint64_t first, std::size_t count, void* buffer) override {
-        return device_->block_read(first, count, buffer);
-    }
-    io::Result write_blocks(std::uint64_t first, std::size_t count, const void* buffer) override {
-        return device_->block_write(first, count, buffer);
-    }
-
-private:
-    device::Device* device_ = nullptr;
-};
-
 // 快取的大小：64 個區塊在 512 位元組的裝置上是 32 KiB，足夠讓 FAT 與目錄
 // 項目的重複讀取幾乎全部命中。
 //
@@ -40,7 +17,7 @@ private:
 constexpr std::size_t cache_blocks = 64;
 
 struct Slot {
-    DeviceBlocks blocks;
+    device::BlockView blocks;
     io::BlockCache cache{blocks};
     exfat::Volume volume;
     char path[vfs::max_path_length]{};
@@ -72,7 +49,7 @@ const char* mount_device(const char* device_path, const char* path, const char* 
     }
     if (slot == nullptr) return "too many mounted devices";
 
-    slot->blocks.attach(node.device);
+    slot->blocks.bind(node.device);
     if (!slot->cache.initialize(cache_blocks)) return "out of memory";
     const auto error = slot->volume.mount(slot->cache);
     if (error != exfat::MountError::None) {

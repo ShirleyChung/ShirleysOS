@@ -1021,19 +1021,98 @@ two directions are exact inverses and a name that lists always looks up again.
 `fs::mount_device()` 把裝置註冊表裡的區塊裝置掛進 VFS：devfs 找到裝置，中間放
 一個 64 個區塊的 `io::BlockCache`，再掛上 `exfat::Volume`。每個掛載有自己的快取
 與檔案系統實例，存在一張最多兩項的固定表；`fs::unmount_device()` 在還有檔案開著
-時拒絕卸載，卸載之後把堆積還回去。shell 的 `mount <裝置> <路徑>` 與 `umount
-<路徑>` 走的就是這條路。目前沒有真正的磁碟驅動程式，能掛的區塊裝置只有 `ram0`
-（那是 SHRFS1，會被回報為不是 exFAT）；virtio-blk 等驅動程式在 M5 加入。
+時拒絕卸載，卸載之後把堆積還回去。開機後的 `/bin/init` shell 經由
+`mount_device`（12）與 `unmount`（13）兩個系統呼叫走這條路，核心內的 shell 直接
+呼叫它：`mount /dev/vda1 /mnt`、`umount /mnt`。
 
 `fs::mount_device()` mounts a block device from the device registry into the
 VFS: devfs finds the device, a 64-block `io::BlockCache` goes in between, and
 an `exfat::Volume` is mounted on it. Each mount has its own cache and file
 system instance, kept in a fixed table of two; `fs::unmount_device()` refuses
-while files are open and returns the heap once unmounted. The shell's
-`mount <device> <path>` and `umount <path>` take exactly this path. There is no
-real disk driver yet, so the only block device to mount is `ram0`, which holds
-SHRFS1 and is reported as not exFAT; virtio-blk and other drivers arrive in
-M5.
+while files are open and returns the heap once unmounted. The `/bin/init`
+shell that runs after boot takes this path through the `mount_device` (12)
+and `unmount` (13) syscalls, and the in-kernel shell calls it directly:
+`mount /dev/vda1 /mnt`, `umount /mnt`.
+
+### 分割表 / Partition tables
+
+`partition::read()` 讀 MBR（含延伸分割區裡以 EBR 串起來的邏輯分割區）與 GPT。
+GPT 的標頭與項目表都要通過 CRC32；主要的一份壞了就改讀磁碟最後一個區塊上的
+備份，兩份都壞才算失敗。第 0 個區塊以 0x55AA 結尾不代表它是 MBR：FAT、exFAT、
+NTFS 的開機磁區也這樣結尾，因此帶有檔案系統簽章、狀態位元組不是 0 或 0x80，或
+分割區超出磁碟的區塊都被當成「沒有分割表」——整顆格式化成一個檔案系統的隨身碟
+就直接掛載整顆磁碟。EBR 鏈最多走 64 層，指回自己也一定會結束。
+
+磁碟驅動程式登記磁碟之後呼叫 `partition::publish()`，每個分割區變成一個
+`io::Partition`（磁碟上一段區塊的視窗）並以 Linux 的方式命名登記：`vda1`，名字以
+數字結尾的磁碟則是 `ram0p1`。MBR 主要分割區依位置編號 1 到 4，邏輯分割區從 5
+開始；GPT 是項目索引加一。`device::BlockView` 把註冊表裡的區塊裝置看成
+`io::BlockDevice`，分割區、區塊快取與掛載都經過它。
+
+`partition::read()` reads MBR (with the logical partitions chained by EBRs
+inside an extended partition) and GPT. A GPT's header and entry array both
+have to pass their CRC32; if the primary copy is damaged the backup in the
+disk's last block is read instead, and only both being damaged is a failure.
+Block 0 ending in 0x55AA does not make it an MBR: the boot sectors of FAT,
+exFAT and NTFS end that way too, so a block carrying a file system signature,
+a status byte other than 0 or 0x80, or a partition past the end of the disk is
+taken as "no partition table" — a USB stick formatted as one file system end to
+end is mounted whole. The EBR chain is followed at most 64 steps, so even one
+pointing back at itself ends.
+
+Once a disk driver registers a disk it calls `partition::publish()`, and each
+partition becomes an `io::Partition` (a window onto a run of the disk's blocks)
+registered under a Linux-style name: `vda1`, or `ram0p1` for a disk whose name
+ends in a digit. MBR primaries are numbered 1 to 4 by slot and logical
+partitions from 5; a GPT partition is its entry index plus one.
+`device::BlockView` sees a registry block device as an `io::BlockDevice`, and
+partitions, the block cache and mounting all go through it.
+
+### virtio-blk
+
+`drivers/virtio/block.cpp` 是與硬體無關的那一半：split virtqueue 與 virtio-blk
+的請求格式。它透過 `virtio::Transport` 摸暫存器，transport 放在 `platform/`：
+x86 PC 上是 `platform/pc/virtio_pci.cpp`（掃描 PCI 匯流排 0，經由 BAR0 的 I/O
+port 存取），ARM 的 QEMU virt 上是 `platform/arm/virtio_mmio.cpp`（0x0a000000 起
+32 個 MMIO 插槽）。兩者都用 legacy（0.9.5）介面：QEMU 預設提供它，而且在 PCI 上
+走 port I/O，不必映射 1 GiB identity map 之外的 BAR。ARM virt 上
+`-drive if=virtio` 會變成 PCI 裝置，必須明確用 `-device virtio-blk-device`。
+
+驅動程式一次只送一個請求並輪詢完成（要求裝置不要發中斷），每個請求最多 16 KiB。
+DMA 只用堆積裡的跳板緩衝區，從不直接用呼叫端的緩衝區：核心的記憶體是 identity
+map 的，但系統呼叫傳進來的可能是 user 的虛擬位址。請求逾時就停用那個裝置，因為
+請求的記憶體還在裝置手上。裝置以 `vda`、`vdb`… 登記，並立刻發布分割區。磁碟需要
+堆積，所以平台在 `platform::initialize_storage()` 裡找儲存裝置，核心在堆積就緒
+之後才呼叫它。
+
+`drivers/virtio/block.cpp` is the hardware-independent half: the split
+virtqueue and the virtio-blk request format. It reaches registers through a
+`virtio::Transport`, and the transports live in `platform/`:
+`platform/pc/virtio_pci.cpp` on an x86 PC (scanning PCI bus 0, going through
+BAR0's I/O ports) and `platform/arm/virtio_mmio.cpp` on ARM's QEMU virt (32
+MMIO slots from 0x0a000000). Both use the legacy (0.9.5) interface: QEMU
+offers it by default, and on PCI it goes through port I/O, so no BAR outside
+the 1 GiB identity map needs mapping. On ARM virt, `-drive if=virtio` becomes a
+PCI device, so `-device virtio-blk-device` has to be asked for explicitly.
+
+The driver sends one request at a time and polls for completion (asking the
+device not to interrupt), moving at most 16 KiB per request. DMA only ever
+uses a bounce buffer in the heap and never the caller's buffer: kernel memory
+is identity-mapped, but a buffer passed in by a syscall may be a user virtual
+address. A request that times out disables its device, since the request's
+memory is still in the device's hands. Devices register as `vda`, `vdb` and so
+on and publish their partitions at once. A disk needs the heap, so a platform
+looks for storage in `platform::initialize_storage()`, which the kernel calls
+only once the heap is ready.
+
+ARM64 核心以 `-mstrict-align` 編譯。直接開機時核心在 MMU 關閉的狀態下執行，所有
+記憶體都是 Device 記憶體，未對齊的存取一律觸發對齊例外；編譯器平常會把逐位元組
+解碼磁碟格式的程式合併成一次寬的載入。
+
+The ARM64 kernel is compiled with `-mstrict-align`. Booted directly, it runs
+with the MMU off, where all memory is Device memory and any unaligned access
+takes an alignment fault; the compiler would otherwise merge byte-by-byte
+decoding of on-disk formats into one wide load.
 
 ## 主控台 Shell / The console shell
 
@@ -1109,14 +1188,20 @@ the kernel, and the result comes back in the first argument register:
 | x86_64      | `rax`         | `rdi`, `rsi`, `rdx` | `int 0x80` | `rax`      |
 | ARM64       | `x8`          | `x0`, `x1`, `x2`    | `svc #0`   | `x0`       |
 
-編號目前有五個：`write`(1)、`exit`(2)、`read`(3)、`open`(4)、`close`(5)。架構
+編號有 `write`(1)、`exit`(2)、`read`(3)、`open`(4)、`close`(5)、`stat`(6)、
+`list`(7)、`uptime`(8)、`exec`(9)、`mount_info`(10)、`block_read`(11)、
+`mount_device`(12) 與 `unmount`(13)；結構化的引數與結果定義在
+`include/shirley/user_api.hpp`，名稱上限 256 位元組、路徑上限 512 位元組。架構
 配接層（x86_64 的 IDT 向量 0x80、ARM64 的 EL0 同步例外）把暫存器填進共用的
 `syscall::Context`，再交給 `syscall::dispatch()`。`libc/arch/<arch>/syscall.S`
 的 trampoline 與 `libc/` 的包裝函式（`write`、`read`、`open`、`close`、`_exit`）
 與這些編號一致。
 
-There are five numbers today: `write`(1), `exit`(2), `read`(3), `open`(4),
-`close`(5). The architecture adapters — the IDT vector 0x80 on x86_64 and the
+The numbers are `write`(1), `exit`(2), `read`(3), `open`(4), `close`(5),
+`stat`(6), `list`(7), `uptime`(8), `exec`(9), `mount_info`(10),
+`block_read`(11), `mount_device`(12), and `unmount`(13); structured arguments
+and results are defined in `include/shirley/user_api.hpp`, with names up to 256
+bytes and paths up to 512. The architecture adapters — the IDT vector 0x80 on x86_64 and the
 EL0 synchronous exception on ARM64 — fill the registers into a shared
 `syscall::Context` and hand it to `syscall::dispatch()`. The trampoline in
 `libc/arch/<arch>/syscall.S` and the wrappers in `libc/` (`write`, `read`,
@@ -1566,6 +1651,31 @@ exfatprogs' mkfs.exfat. The overall plan is in
 Still missing: exFAT writing, ext4 and NTFS, MBR/GPT partition tables, and a
 real disk driver — there is no real exFAT device to mount until M5 brings
 virtio-blk.
+
+### M4.2 — 分割表與 virtio-blk / partition tables and virtio-blk
+
+核心有了真正的磁碟驅動程式。virtio-blk 在 x86 上經由 legacy virtio-PCI、在 ARM
+virt 上經由 virtio-mmio 被找到，以 `vda`、`vdb`… 登記；MBR 與 GPT 分割區以
+`vda1` 之類的名字發布。`/bin/init` shell 多了 `mount <裝置> <路徑>` 與 `umount`，
+經由新的 `mount_device`（12）與 `unmount`（13）系統呼叫；user ABI 的名稱上限
+放寬到 256 位元組、路徑到 512 位元組，與 VFS 一致。QEMU 開機測試在四個目標上都
+接一顆有 MBR 分割表的 virtio 磁碟，掛上其中的 exFAT 分割區並讀檔。
+
+尚未完成的是 exFAT 寫入、ext4 與 NTFS、中斷驅動與多請求並行的磁碟 I/O、現代
+（1.0）virtio，以及實體機器的儲存控制器（AHCI、NVMe、USB）。
+
+The kernel has a real disk driver. virtio-blk is found through legacy
+virtio-PCI on x86 and virtio-mmio on ARM virt and registered as `vda`, `vdb`
+and so on; MBR and GPT partitions are published under names such as `vda1`.
+The `/bin/init` shell gains `mount <device> <path>` and `umount` through the new
+`mount_device` (12) and `unmount` (13) syscalls, and the user ABI's name limit
+grows to 256 bytes and its path limit to 512, matching the VFS. The QEMU boot
+tests attach a virtio disk with an MBR partition table on all four targets,
+mount the exFAT partition on it, and read files.
+
+Still missing: exFAT writing, ext4 and NTFS, interrupt-driven and concurrent
+disk I/O, modern (1.0) virtio, and the storage controllers of physical
+machines (AHCI, NVMe, USB).
 
 ### 後續規劃 / Roadmap
 

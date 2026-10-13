@@ -24,6 +24,17 @@ struct Capabilities {
 // 初始化平台層；必須在 arch::initialize() 之後呼叫。
 // Initialize the platform layer; must run after arch::initialize().
 void initialize(const BootInfo&);
+
+// 找出儲存裝置並把它們交給驅動程式。它和 initialize() 分開，因為磁碟驅動程式
+// 需要堆積（virtqueue 與 DMA 跳板緩衝區），而堆積要等記憶體初始化完才有；核心
+// 在堆積就緒之後才呼叫它。沒有儲存裝置的平台什麼都不做。
+//
+// Find the storage devices and hand them to their drivers. It is separate from
+// initialize() because a disk driver needs the heap (virtqueues and the DMA
+// bounce buffer) and the heap exists only after memory is initialized; the
+// kernel calls this once the heap is ready. A platform with no storage does
+// nothing.
+void initialize_storage();
 // 平台識別名稱，以及較詳細的機器描述。
 // The platform identifier and a longer machine description.
 const char* name();

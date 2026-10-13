@@ -6,13 +6,14 @@
 
 extern long long shirley_syscall(long long number, ...);
 
-#define PATH_MAX 128
+#define PATH_MAX 512
 #define LINE_MAX 256
 #define ARG_MAX 16
 
-struct node_info { uint64_t size, entries; uint32_t type; char name[56], path[128], filesystem[16]; };
+struct node_info { uint64_t size, entries; uint32_t type; char name[256], path[512], filesystem[16]; };
 struct uptime_info { uint64_t ticks, frequency; };
-struct mount_info { char path[128], filesystem[16]; };
+struct mount_info { char path[512], filesystem[16]; };
+struct mount_request { const char* device; const char* path; char* reason; uint64_t capacity; };
 struct block_request { const char* path; uint64_t block; void* buffer; uint64_t capacity; };
 
 static char cwd[PATH_MAX] = "/";
@@ -57,7 +58,8 @@ static const char* description_clear(void){return "clear the terminal with ANSI 
 static const char* description_ls(void){return "list a directory through the kernel VFS";}
 static const char* description_cat(void){return "read a file through kernel file-descriptor syscalls";}
 static const char* description_stat(void){return "query a VFS node's path, type, file system, and size";}
-static const char* description_mount(void){return "list file systems mounted by the kernel";}
+static const char* description_mount(void){return "list mounts, or mount <device> <path> an exFAT volume";}
+static const char* description_umount(void){return "unmount a device mounted with mount";}
 static const char* description_uptime(void){return "show kernel timer ticks and elapsed uptime";}
 static const char* description_blk(void){return "read and dump one block from a kernel block device";}
 static const char* description_exec(void){return "load and run a user-space ELF program by path";}
@@ -67,7 +69,8 @@ static void cat_file(void){ if(argc<2){putln("cat: needs a file to print");retur
 static void cd_cmd(void){ char path[PATH_MAX];struct node_info n;resolve(argc>1?argv[1]:"/",path);if(shirley_syscall(6,path,&n)<0){putln("cd: not found");return;}if(n.type!=1){putln("cd: not a directory");return;}copy(cwd,sizeof(cwd),n.path); }
 static void stat_cmd(void){if(argc<2){putln("stat: needs a path");return;}char path[PATH_MAX];struct node_info n;resolve(argv[1],path);if(shirley_syscall(6,path,&n)<0){putln("stat: not found");return;}puts2("  path    ");putln(n.path);puts2("  type    ");putln(n.type==0?"file":n.type==1?"directory":n.type==2?"character":"block");puts2("  fs      ");putln(n.filesystem);puts2("  size    ");number(n.size);putln(" bytes");}
 static void echo_cmd(void){int end=argc,fd=1;char path[PATH_MAX];for(int i=1;i<argc;++i)if(equal(argv[i],">")&&i+1<argc){end=i;resolve(argv[i+1],path);fd=open(path,O_WRONLY);if(fd<0){putln("echo: read-only file system");return;}break;}for(int i=1;i<end;++i){if(i>1)write(fd," ",1);write(fd,argv[i],length(argv[i]));}write(fd,"\n",1);if(fd!=1)close(fd);}
-static void mount_cmd(void){struct mount_info m;for(uint64_t i=0;shirley_syscall(10,i,&m)==0;++i){puts2("  ");puts2(m.path);puts2("  ");putln(m.filesystem);}}
+static void mount_cmd(void){if(argc==2){putln("mount: needs a device and a path, or nothing");return;}if(argc>=3){char device[PATH_MAX],path[PATH_MAX],reason[64];reason[0]=0;resolve(argv[1],device);resolve(argv[2],path);struct mount_request r={device,path,reason,sizeof(reason)};if(shirley_syscall(12,&r)<0){puts2("mount: ");puts2(argv[1]);puts2(": ");putln(reason);}return;}struct mount_info m;for(uint64_t i=0;shirley_syscall(10,i,&m)==0;++i){puts2("  ");puts2(m.path);puts2("  ");putln(m.filesystem);}}
+static void umount_cmd(void){if(argc<2){putln("umount: needs a path");return;}char path[PATH_MAX],reason[64];reason[0]=0;resolve(argv[1],path);if(shirley_syscall(13,path,reason,sizeof(reason))<0){puts2("umount: ");puts2(argv[1]);puts2(": ");putln(reason);}}
 static void uptime_cmd(void){struct uptime_info u;if(shirley_syscall(8,&u)<0||!u.frequency){putln("uptime: no timer");return;}puts2("  up ");number(u.ticks/u.frequency);puts2(" s (");number(u.ticks);puts2(" timer interrupts at ");number(u.frequency);putln(" Hz)");}
 static void blk_cmd(void){if(argc<3){putln("blk: needs a device and a block number");return;}char path[PATH_MAX];unsigned char b[512];uint64_t block=0;resolve(argv[1],path);for(char*p=argv[2];*p;++p)block=block*10+(uint64_t)(*p-'0');struct block_request r={path,block,b,sizeof(b)};long long n=shirley_syscall(11,&r);if(n<0){putln("blk: read failed");return;}const char*h="0123456789abcdef";for(int i=0;i<n;i+=16){for(int j=0;j<16&&i+j<n;++j){char x[3]={h[b[i+j]>>4],h[b[i+j]&15],' '};write(1,x,3);}puts2(" ");for(int j=0;j<16&&i+j<n;++j){char c=b[i+j]>=' '&&b[i+j]<='~'?(char)b[i+j]:'.';write(1,&c,1);}puts2("\n");}}
 static void exec_cmd(const char* requested){char path[PATH_MAX];resolve(requested,path);long long status=shirley_syscall(9,path);puts2("[");puts2(path);puts2(" exited with status ");number((uint64_t)status&255);putln("]");}
@@ -83,7 +86,7 @@ static const struct command shell_commands[]={
 };
 static const struct command kernel_commands[]={
     {"ls",ls,description_ls},{"cat",cat_file,description_cat},{"stat",stat_cmd,description_stat},
-    {"mount",mount_cmd,description_mount},{"uptime",uptime_cmd,description_uptime},{"blk",blk_cmd,description_blk}
+    {"mount",mount_cmd,description_mount},{"umount",umount_cmd,description_umount},{"uptime",uptime_cmd,description_uptime},{"blk",blk_cmd,description_blk}
 };
 static const struct command executable_commands[]={
     {"exec",exec_command,description_exec},{"hello",hello_cmd,description_hello}
