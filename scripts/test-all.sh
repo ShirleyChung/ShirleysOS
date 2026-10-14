@@ -62,10 +62,10 @@ for target in arm64 x86_64 arm64_uefi x86_64_uefi; do
   printf "[%-11s] boot  ... " "$target"
   qemu=qemu-system-x86_64
   case "$target" in arm64*) qemu=qemu-system-aarch64 ;; esac
-  "$python" - "$qemu" "$artifact" "$target" "$firmware" "$root/tests/images/exfat-clean.img" <<'PY'
+  "$python" - "$qemu" "$artifact" "$target" "$firmware" "$root/tests/images/exfat-clean.img" "$root/tests/images/ext4-basic.img" <<'PY'
 import os, re, socket, struct, subprocess, sys, tempfile, threading, time
 
-qemu, artifact, target, firmware, exfat_image = sys.argv[1:]
+qemu, artifact, target, firmware, exfat_image, ext4_image = sys.argv[1:]
 x86 = not target.startswith('arm64')
 
 # x86 目標會透過 QEMU 監控介面注入真正的按鍵事件，藉此驗證中斷驅動的鍵盤
@@ -113,15 +113,21 @@ else:
 # 也會是 PCI，所以明確要求 virtio-mmio 的 virtio-blk-device。
 #
 # One virtio disk: an MBR partition table whose first partition starts at
-# sector 2048 and holds the exFAT test image. On x86 QEMU attaches it as
+# sector 2048 and holds the exFAT test image, and whose second partition, at
+# sector 4096, holds the ext4 test image. On x86 QEMU attaches it as
 # virtio-blk-pci; on ARM virt -drive if=virtio would be PCI too, so the
 # virtio-mmio virtio-blk-device is asked for explicitly.
 with open(exfat_image, 'rb') as handle:
     exfat = handle.read()
+with open(ext4_image, 'rb') as handle:
+    ext4 = handle.read()
+assert len(exfat) <= 2048 * 512 and len(ext4) <= 4096 * 512
 disk = bytearray(4 * 1024 * 1024)
 disk[446:462] = struct.pack('<B3sB3sII', 0, bytes(3), 0x07, bytes(3), 2048, len(exfat) // 512)
+disk[462:478] = struct.pack('<B3sB3sII', 0, bytes(3), 0x83, bytes(3), 4096, len(ext4) // 512)
 disk[510:512] = b'\x55\xaa'
 disk[2048 * 512:2048 * 512 + len(exfat)] = exfat
+disk[4096 * 512:4096 * 512 + len(ext4)] = ext4
 disk_file = tempfile.NamedTemporaryFile(prefix='shirley-disk-', suffix='.img', delete=False)
 disk_file.write(disk)
 disk_file.close()
@@ -135,8 +141,13 @@ timeout = 30 if target.endswith('_uefi') else 8
 prompt = 'shirley:/$'
 collected = []
 
+# 客體輸出 UTF-8（ext4 映像裡有非 ASCII 檔名）；不指定的話 Windows 上的 Python
+# 會用系統的字碼頁解碼而失敗。
+# The guest writes UTF-8 (the ext4 image has a non-ASCII file name); left
+# unspecified, Python on Windows would decode with the system code page and fail.
 process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                           stderr=subprocess.STDOUT, text=True)
+                           stderr=subprocess.STDOUT, text=True, encoding='utf-8',
+                           errors='replace')
 
 # QEMU 的輸出必須一邊執行一邊讀，否則輸入還沒送出去管線就已經塞住。逐字元
 # 讀而不是逐行讀：提示符後面沒有換行，等整行才收下的話永遠等不到它。
@@ -381,12 +392,12 @@ expect(answer, 'exited with status 0', 'exec /bin/hello exit status')
 # virtio-blk, the MBR partition table and exFAT: the disk is found at boot, its
 # partition becomes vda1, and once mounted it lists and reads files
 # case-insensitively; the whole disk is not exFAT and has to be refused.
-if '[virtio] vda: 4 MiB, 1 partition' not in output():
+if '[virtio] vda: 4 MiB, 2 partitions' not in output():
     fail('The virtio disk or its partition was not found at boot')
 answer = type_line('ls /dev')
 expect(answer, 'vda1', 'ls /dev shows the partition')
 answer = type_line('mount /dev/vda /x')
-expect(answer, 'not an exFAT volume', 'mount refuses the partitioned disk itself')
+expect(answer, 'no supported file system', 'mount refuses the partitioned disk itself')
 answer = type_line('mount /dev/vda1 /mnt')
 answer = type_line('mount')
 expect(answer, '/mnt  exfat', 'mount lists the exFAT volume')
@@ -419,6 +430,32 @@ answer = type_line('rm /mnt/big.bin')
 answer = type_line('stat /mnt/big.bin')
 expect(answer, 'not found', 'stat after rm')
 answer = type_line('sync')
+
+# ext4（唯讀）掛在 exFAT 旁邊：格式由魔數認出，兩個裝置同時掛著。
+# ext4 (read-only) mounted beside exFAT: the format is recognized by its magic
+# number, and both devices are mounted at once.
+answer = type_line('mount /dev/vda2 /e')
+answer = type_line('mount')
+expect(answer, '/e  ext4 (ro)', 'mount lists the ext4 volume')
+expect(answer, '/mnt  exfat', 'exFAT stays mounted beside ext4')
+answer = type_line('ls /e')
+expect(answer, 'hello.txt', 'ls /e')
+expect(answer, 'docs/', 'ls /e')
+answer = type_line('cat /e/hello.txt')
+expect(answer, 'Hello from ext4!', 'cat an ext4 file')
+answer = type_line('cat /e/docs/nested/deep/leaf.txt')
+expect(answer, 'deep leaf', 'cat a nested ext4 file')
+answer = type_line('cat /e/link-fast')
+expect(answer, 'docs/readme.md', 'cat an ext4 symbolic link')
+answer = type_line('stat /e/fragmented.bin')
+expect(answer, '32668 bytes', 'stat an ext4 file')
+answer = type_line('echo nope > /e/new.txt')
+answer = type_line('stat /e/new.txt')
+expect(answer, 'not found', 'ext4 refuses writes')
+answer = type_line('umount /e')
+answer = type_line('ls /e')
+expect(answer, 'not found', 'ls after umount of ext4')
+
 answer = type_line('umount /mnt')
 answer = type_line('ls /mnt')
 expect(answer, 'not found', 'ls after umount')

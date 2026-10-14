@@ -278,7 +278,8 @@ device registry + VFS + shell + user programs
 | `shrfs_vfs.cpp` | 把 SHRFS1 expose 成 `vfs::FileSystem`。 | filesystem-to-VFS adapter。 |
 | `devfs.cpp` | 把 device registry expose 成 `/dev`。 | device namespace filesystem。 |
 | `exfat.cpp` | exFAT 讀寫：boot checksum、FAT/NoFatChain、entry set、大寫表、不分大小寫查找；位元圖配置、建立/刪除/改名/截短、VolumeDirty。 | exFAT filesystem driver。 |
-| `device_mount.cpp` | `mount_device`/`unmount_device`：device → `BlockCache` → `exfat::Volume` → VFS。 | runtime volume mounting。 |
+| `ext4.cpp` | ext2／ext3／ext4 唯讀：超級區塊與功能旗標、群組描述子（含 64bit、meta_bg）、extent 樹與間接區塊、目錄循序掃描。 | ext4 filesystem driver。 |
+| `device_mount.cpp` | `mount_device`/`unmount_device`：device → `BlockCache` → 依魔數選 `exfat::Volume` 或 `ext4::Volume` → VFS。 | runtime volume mounting。 |
 | `partition.cpp` | MBR（含邏輯分割區）與 GPT（CRC32、備份標頭）解析，`io::Partition` 與 `vda1` 式的裝置發布。 | partition layer。 |
 | `rootfs_mount.cpp` | 將建置生成的 rootfs image 包成 RAM disk，掛載並註冊 `ram0`。 | early root storage bring-up。 |
 
@@ -477,6 +478,7 @@ device registry + VFS + shell + user programs
 | 檔案 | 作用 | 架構地位 |
 | --- | --- | --- |
 | `make-exfat-image.py` | 依 exFAT 規格寫出測試映像（`exfat-basic.img`、`--clean` 時 `exfat-clean.img`）。 | test fixture generator。 |
+| `make-ext4-image.py` | 依 Linux 核心文件寫出 ext 測試映像（`ext4-basic.img`、`--meta-bg` 時 `ext4-metabg.img`、`--ext2` 時 `ext2-basic.img`）。 | test fixture generator。 |
 | `check-exfat-image.py` | 獨立的 exFAT 一致性檢查（小型 fsck）：校驗和、雜湊、FAT 鏈、位元圖。 | test oracle。 |
 
 ## `tests/`
@@ -501,6 +503,8 @@ device registry + VFS + shell + user programs
 | `virtio_smoke.cpp` | 以假的 transport 扮演 virtio-blk 裝置，測啟動順序、I/O、唯讀、佇列繞回與分割區發布。 | virtio driver test。 |
 | `images/exfat-basic.img` | `tools/make-exfat-image.py` 依規格產生的 1 MiB exFAT 測試映像，含刻意損壞的項目組。 | test fixture。 |
 | `images/exfat-clean.img` | 同樣內容、沒有損壞的映像（`--clean`），寫入測試的起點。 | test fixture。 |
+| `ext4_smoke.cpp` | 以三個 ext 映像測 ext2/ext4 掛載、extent 與間接區塊、目錄、符號連結、拒絕，以及與 exFAT 同時掛載。 | ext4 contract test。 |
+| `images/ext4-basic.img`、`ext4-metabg.img`、`ext2-basic.img` | `tools/make-ext4-image.py` 產生的 ext 測試映像。 | test fixture。 |
 | `exfat_write_smoke.cpp` | 經由 VFS 做每一種 exFAT 寫入並讀回，存下映像給 `tools/check-exfat-image.py` 檢查。 | exFAT write test。 |
 
 ## `docs/`

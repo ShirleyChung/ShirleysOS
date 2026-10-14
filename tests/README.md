@@ -18,6 +18,7 @@ and checks the guest's own output.
 | `block_cache_smoke.cpp` | Cache hits, write-back, LRU eviction, pinning, failed write-backs, larger cache blocks, and SHRFS mounted through the cache |
 | `exfat_smoke.cpp` | exFAT mounting, case-insensitive lookup, reading, damaged-image rejection, and `mount_device()`, against `images/exfat-basic.img` |
 | `partition_smoke.cpp` | CRC-32, MBR with an EBR chain, GPT with its backup header, telling a boot sector from a partition table, and partition device naming |
+| `ext4_smoke.cpp` | ext2/ext4 mounting, extent trees, holes, uninitialized extents, indirect blocks up to triple, htree and multi-block directories, symbolic links, meta_bg, rejection of damaged volumes and unsupported features, and exFAT and ext4 mounted together through `mount_device()`, against the three ext images in `images/` |
 | `exfat_write_smoke.cpp` | Every kind of exFAT write through the VFS on a copy of `images/exfat-clean.img`, read back step by step; the image it saves is then checked by `tools/check-exfat-image.py` (when CMake finds Python) |
 | `virtio_smoke.cpp` | The virtio-blk driver against a fake transport that plays the device: bring-up order, I/O, read-only devices, ring wrap-around, partition publishing |
 
@@ -48,13 +49,17 @@ header, which proves an `open()` followed by a `block_read()` reached the actual
 sectors of the disk the root file system is mounted from.
 
 Every target also boots with a virtio disk attached: a 4 MiB image with an MBR
-partition table whose first partition holds `images/exfat-basic.img`. The boot
-log has to report `vda` with one partition, `ls /dev` has to show `vda1`,
-mounting the whole disk has to be refused as not exFAT, and once `vda1` is
+partition table whose first partition holds `images/exfat-clean.img` and whose
+second holds `images/ext4-basic.img`. The boot log has to report `vda` with two
+partitions, `ls /dev` has to show `vda1`, mounting the whole disk has to be
+refused as holding no supported file system, and once `vda1` is
 mounted at `/mnt` the stage lists it, reads a nested file and a file named in
 the wrong case, and checks `stat`. It then writes: a file created with
 `echo >`, read back, a directory made, the file moved into it, a non-empty
-`rm` refused, a file deleted, `sync`, and `umount`. Once QEMU has exited the
+`rm` refused, a file deleted, and `sync`. With exFAT still mounted, `vda2` is
+mounted at `/e`, `mount` has to show `ext4 (ro)`, and the stage lists it, reads
+a nested file and a symbolic link, checks `stat`, sees a write refused, and
+unmounts both. Once QEMU has exited the
 partition is cut out of the disk image and handed to
 `tools/check-exfat-image.py --clean`, which has to find it consistent and
 holding exactly the changes the guest made. The disk starts from

@@ -7,7 +7,7 @@ This plan covers ext4, NTFS and exFAT support. It builds on the existing
 `vfs::FileSystem` interface and `io::BlockDevice`, and does not change the VFS
 layering.
 
-## 進度 / Status (2026-10-13)
+## 進度 / Status (2026-10-14)
 
 | 項目 | 狀態 |
 | --- | --- |
@@ -17,10 +17,12 @@ layering.
 | 0.4 磁碟驅動 | 完成（QEMU）：`drivers/virtio/block.cpp`，x86 virtio-PCI、ARM virtio-mmio。 |
 | 0.5 VFS 寫入擴充 | 完成：create／remove／rename／truncate／sync，`open` 的 Create／Truncate，系統呼叫 14–17。 |
 | 0.6 名稱與路徑 | 完成：名稱 255 位元組、路徑 512 位元組；`kernel/text/utf.cpp`。 |
-| 0.7 掛載指令 | 完成：`/bin/init` 與核心 shell 的 `mount <dev> <path>`／`umount`（系統呼叫 12、13），目前只認 exFAT。 |
+| 0.7 掛載指令 | 完成：`/bin/init` 與核心 shell 的 `mount <dev> <path>`／`umount`（系統呼叫 12、13）；依魔數認出 exFAT 或 ext2/3/4（`identify()`）。 |
 | 0.8 mount 物件化 | 完成：exFAT 是物件，`kernel/fs/device_mount.cpp` 管理實例。 |
 | FS-1 exFAT 唯讀 | 完成：`kernel/fs/exfat.cpp`；測試映像由 `tools/make-exfat-image.py` 產生。 |
 | FS-2 exFAT 讀寫 | 完成：寫入、建立、刪除、改名、截短、VolumeDirty；以 `tools/check-exfat-image.py` 檢查（取代 fsck.exfat，本機沒有）。 |
+| FS-3 ext4 唯讀 | 完成：`kernel/fs/ext4.cpp`，ext2／ext3／ext4、extent 與間接區塊、64bit、meta_bg、htree 目錄以循序掃描讀取、metadata_csum 超級區塊校驗；測試映像由 `tools/make-ext4-image.py` 產生並以 7-Zip 比對，另以 e2fsprogs 的 215 個測試映像驗證不當掉。 |
+| FS-4 ext4 讀寫 | 暫不進行：目前只需要唯讀。 |
 
 以下第 1 節描述的是開始實作前的狀態。
 Section 1 below describes the state before implementation began.
@@ -185,8 +187,6 @@ FS-1/FS-3/FS-5 可在 FS-0 完成後並行。依規格書〈規格維護〉，�
 
 ## 8. 立即下一步 / Immediate next steps
 
-1. 在 `OS_SPEC.md` 的後續規劃加入 FS-0…FS-6，並與 M4/M5 對齊。
-2. 實作核心堆積與區塊快取（0.1、0.2），用現有 `RamDisk` 與 SHRFS 驗證快取不改變行為。
-3. 寫 `partition.cpp` 與 host smoke test（用手工 MBR/GPT 位元組）。
-4. 寫 `tools/make-test-images.sh`，先產出 exFAT 映像。
-5. 開始 exFAT 唯讀驅動。
+FS-0 到 FS-3 已完成，FS-4（ext4 寫入）暫不進行。下一步是 FS-5：NTFS 唯讀。
+FS-0 through FS-3 are done, and FS-4 (ext4 writing) is not being pursued for
+now. Next is FS-5: read-only NTFS.

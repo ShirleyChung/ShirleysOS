@@ -1,8 +1,8 @@
 # File systems
 
 Here live the VFS, the SHRFS1 driver behind `/`, devfs behind `/dev`, the
-read-only exFAT driver, and `device_mount.cpp`, which mounts an exFAT device
-at runtime.
+exFAT driver, the read-only ext2/3/4 driver, and `device_mount.cpp`, which
+mounts an exFAT or ext4 device at runtime.
 
     shell / ELF loader
            ↓
@@ -122,8 +122,9 @@ therefore cannot go stale, and a set straddling a cluster boundary needs no
 special case.
 
 `device_mount.cpp` is what the shell's `mount <device> <path>` calls: it finds
-the device through devfs, puts a 64-block cache in front of it, mounts exFAT,
-and mounts that into the VFS. `umount` refuses while files are open.
+the device through devfs, puts a 64-block cache in front of it, recognizes
+exFAT or ext2/3/4 by the magic number, mounts it, and mounts that into the
+VFS. `umount` refuses while files are open.
 
 The test image `tests/images/exfat-basic.img` is written by
 `tools/make-exfat-image.py`, which shares no code with this driver.
@@ -135,6 +136,22 @@ FAT-chained when it is not; a full directory grows by a zeroed cluster. A
 writable mount sets VolumeDirty on the device first and clears it at unmount;
 a volume that was already dirty mounts read-only. `tools/check-exfat-image.py`
 checks the images the tests write.
+
+## ext2/ext3/ext4
+
+`ext4.cpp` reads ext2, ext3 and ext4, read-only, from the ext4 disk layout in
+the Linux kernel documentation. A node's identifier is simply its inode
+number. Files are mapped through extent trees or the old indirect blocks, and
+anything that maps to zero — a hole, an uninitialized extent — reads as zero.
+Directories are scanned linearly, which skips htree index blocks for free;
+`list()` keeps a cursor so `ls` is linear. The journal is never read, so a
+volume flagged needs_recovery is refused, as are inline_data, bigalloc, an
+external journal, dirdata and compression. Only the superblock checksum is
+verified; every block number is bounds-checked against the volume.
+
+The test images `tests/images/ext4-basic.img`, `ext4-metabg.img` and
+`ext2-basic.img` are written by `tools/make-ext4-image.py`, which shares no
+code with this driver and was itself checked against 7-Zip.
 
 ## Partitions
 

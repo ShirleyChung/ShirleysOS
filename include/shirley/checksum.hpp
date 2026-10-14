@@ -18,4 +18,14 @@ namespace shirley::checksum {
 // piece.
 std::uint32_t crc32(const void* data, std::size_t length, std::uint32_t previous = 0);
 
+// Castagnoli 的 CRC-32C（反射多項式 0x82F63B78），與 iSCSI 及 SSE4.2 的 crc32
+// 指令相同，previous 的用法與 crc32() 一樣。ext4 的 metadata_csum 用它，但存的是
+// 沒有做最後反相的值，也就是這裡結果的位元反相。
+//
+// The Castagnoli CRC-32C (reflected polynomial 0x82F63B78), the same as iSCSI's
+// and SSE4.2's crc32 instruction; previous works as for crc32(). ext4's
+// metadata_csum uses it, but stores the value without the final inversion,
+// which is the bitwise complement of the result here.
+std::uint32_t crc32c(const void* data, std::size_t length, std::uint32_t previous = 0);
+
 } // namespace shirley::checksum

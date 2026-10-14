@@ -229,7 +229,7 @@ void test_device_mount(std::vector<std::uint8_t> image) {
     assert(read_all("/mnt/docs/sub/deep.txt") == "deep inside\n");
     assert(std::strcmp(fs::mount_device("/usb0", "/mnt"), "already mounted there") == 0);
     assert(std::strcmp(fs::mount_device("/missing", "/other"), "no such device") == 0);
-    assert(std::strcmp(fs::mount_device("/ram0", "/other"), "not an exFAT volume") == 0);
+    assert(std::strcmp(fs::mount_device("/ram0", "/other"), "no supported file system (exFAT, ext2/3/4)") == 0);
     // 父目錄不存在的掛載點走不到，VFS 拒絕它。
     // A mount point whose parent does not exist is unreachable, and the VFS
     // refuses it.

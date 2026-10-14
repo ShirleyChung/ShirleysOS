@@ -693,7 +693,7 @@ Applications
 libc / POSIX Compatibility
 ShirleyOS Native ABI
 Generic Kernel
-VFS (shrfs, exfat, devfs)
+VFS (shrfs, exfat, ext4, devfs)
 Console / Device Registry
 Architecture Abstraction
 Platform Abstraction
@@ -1077,10 +1077,65 @@ Conversion between UTF-16 and UTF-8 lives in `text::utf16_to_utf8()` and
 `utf8_to_utf16()`. A lone surrogate on disk is encoded the WTF-8 way, so the
 two directions are exact inverses and a name that lists always looks up again.
 
+### ext2／ext3／ext4
+
+`ext4::Volume` 依照 Linux 核心文件的 ext4 磁碟格式說明實作，唯讀；ext2 與 ext3
+也由它讀，`mount` 依功能旗標顯示 `ext2 (ro)`、`ext3 (ro)` 或 `ext4 (ro)`。它讀
+超級區塊與群組描述子（32 與 64 位元、meta_bg、sparse_super／sparse_super2 的
+位置）、inode、extent 樹（洞與未初始化的 extent 讀成零），以及舊式的直接與
+一、二、三層間接區塊。目錄以循序掃描讀取，htree 的索引區塊偽裝成空項目，自然
+被跳過；`list()` 記住上次停下的位置，所以列一個目錄是線性時間。符號連結以檔案
+呈現，內容是目標；裝置檔、FIFO 與 socket 不列出。名稱以位元組比較，區分大小寫。
+
+掛載前檢查功能旗標：inline_data、bigalloc、外部 journal、dirdata 與壓縮讓掛載
+失敗，journal 還有交易沒重播（needs_recovery）的卷冊也被拒絕——在重播之前磁碟
+上的 metadata 可能是舊的。metadata_csum 卷冊驗證超級區塊的 CRC-32C；其他
+metadata 只做範圍檢查，任何指向卷冊外的區塊編號都讓讀取失敗而不是讀錯地方。
+加密的檔案看得到但讀不出內容。寫入一律回報唯讀。
+
+`ext4::Volume` is implemented from the ext4 disk layout description in the
+Linux kernel documentation, read-only; it also reads ext2 and ext3, and `mount`
+shows `ext2 (ro)`, `ext3 (ro)` or `ext4 (ro)` by the feature flags. It reads
+the superblock and group descriptors (32- and 64-bit, with the meta_bg,
+sparse_super and sparse_super2 placements), inodes, extent trees (holes and
+uninitialized extents read as zero), and the old direct plus single, double and
+triple indirect blocks. Directories are scanned linearly: htree index blocks
+masquerade as empty entries and are skipped as a matter of course, and
+`list()` remembers where it stopped, so listing a directory takes linear time.
+A symbolic link appears as a file whose content is its target; device files,
+FIFOs and sockets are not listed. Names compare byte for byte, case-sensitively.
+
+The feature flags are checked before mounting: inline_data, bigalloc, an
+external journal, dirdata and compression fail the mount, and so does a volume
+whose journal still holds transactions to replay (needs_recovery), since its
+metadata on disk may be stale until then. A metadata_csum volume has its
+superblock CRC-32C verified; other metadata is only bounds-checked, and any
+block number pointing outside the volume fails the read rather than reading
+the wrong place. Encrypted files are listed but cannot be read. Every write
+reports read-only.
+
+`tools/make-ext4-image.py` 依同一份文件獨立寫出三個測試映像：`ext4-basic.img`
+（64bit、extents、dir_index、metadata_csum 的全部校驗和）、內容相同但開啟 meta_bg
+的 `ext4-metabg.img`，以及 2 KiB 區塊、沒有 filetype、用間接區塊的
+`ext2-basic.img`。`ext4-basic.img` 與 ext2 映像都用 7-Zip 解開逐位元組比對過
+（7-Zip 不支援的 meta_bg 與三層間接區塊除外）；讀取端另外以 e2fsprogs 測試套件的
+215 個映像驗證過，壞掉的映像必須被拒絕或安全地走完，不能當掉或卡住。
+
+`tools/make-ext4-image.py` independently writes three test images from the same
+documentation: `ext4-basic.img` (64bit, extents, dir_index, every metadata_csum
+checksum), `ext4-metabg.img` with the same content and meta_bg on, and
+`ext2-basic.img` with 2 KiB blocks, no filetype and indirect blocks.
+`ext4-basic.img` and the ext2 image were unpacked with 7-Zip and compared byte
+for byte (except for meta_bg and triple indirect blocks, which 7-Zip does not
+support); the reader was also run over the 215 images of the e2fsprogs test
+suite, where a damaged image has to be refused or walked safely, never crash or
+hang.
+
 ### 掛載裝置 / Mounting a device
 
 `fs::mount_device()` 把裝置註冊表裡的區塊裝置掛進 VFS：devfs 找到裝置，中間放
-一個 64 個區塊的 `io::BlockCache`，再掛上 `exfat::Volume`。每個掛載有自己的快取
+一個 64 個區塊的 `io::BlockCache`，再依魔數認出格式，掛上 `exfat::Volume`（可寫）
+或 `ext4::Volume`（唯讀）；兩者都不是時回報 `no supported file system`。每個掛載有自己的快取
 與檔案系統實例，存在一張最多兩項的固定表；`fs::unmount_device()` 在還有檔案開著
 時拒絕卸載，卸載之後把堆積還回去。開機後的 `/bin/init` shell 經由
 `mount_device`（12）與 `unmount`（13）兩個系統呼叫走這條路，核心內的 shell 直接
@@ -1088,7 +1143,9 @@ two directions are exact inverses and a name that lists always looks up again.
 
 `fs::mount_device()` mounts a block device from the device registry into the
 VFS: devfs finds the device, a 64-block `io::BlockCache` goes in between, and
-an `exfat::Volume` is mounted on it. Each mount has its own cache and file
+the format is recognized by its magic number and an `exfat::Volume`
+(writable) or `ext4::Volume` (read-only) is mounted on it; anything else
+reports `no supported file system`. Each mount has its own cache and file
 system instance, kept in a fixed table of two; `fs::unmount_device()` refuses
 while files are open and returns the heap once unmounted. The `/bin/init`
 shell that runs after boot takes this path through the `mount_device` (12)
@@ -1763,6 +1820,29 @@ the partition on the disk to `tools/check-exfat-image.py`.
 
 Still missing: timestamps (there is no real-time clock), renames that change
 only letter case, ext4 and NTFS.
+
+### M4.4 — ext4 唯讀 / read-only ext4
+
+ext2、ext3 與 ext4 可以唯讀掛載（見〈ext2／ext3／ext4〉）。`mount` 依魔數認出
+exFAT 或 ext2/3/4，不必指定格式。主機測試涵蓋三個依文件產生的映像、損壞與不支援
+功能的拒絕，以及 exFAT 與 ext4 同時掛載；QEMU 開機測試在四個目標上都把 ext4
+映像放在 virtio 磁碟的第二個分割區，與 exFAT 同時掛著讀取，並確認寫入被拒絕。
+新增 `checksum::crc32c()`。
+
+尚未完成的是 ext4 寫入與 journal 重播（依目前的決定只需要唯讀）、inline_data、
+htree 雜湊查找（目前查找是線性掃描），以及 NTFS。
+
+ext2, ext3 and ext4 can be mounted read-only (see "ext2/ext3/ext4"). `mount`
+recognizes exFAT or ext2/3/4 by the magic number, with no format to name. The
+host tests cover three images generated from the documentation, the refusal of
+damaged volumes and unsupported features, and exFAT and ext4 mounted side by
+side; the QEMU boot tests put the ext4 image on the virtio disk's second
+partition on all four targets, read it while exFAT stays mounted, and check
+that writes are refused. `checksum::crc32c()` is new.
+
+Still missing: ext4 writing and journal replay (read-only is all that is called
+for at present), inline_data, htree hash lookups (lookups scan linearly today),
+and NTFS.
 
 ### 後續規劃 / Roadmap
 

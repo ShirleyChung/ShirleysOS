@@ -5,21 +5,23 @@
 // 把區塊裝置上的檔案系統掛進 VFS。根檔案系統與 devfs 在開機時就掛好了；這裡
 // 處理的是之後才掛上來的卷冊，例如一顆 exFAT 隨身碟：
 //
-//     /dev/<name> → device::Device → io::BlockCache → exfat::Volume → vfs
+//     /dev/<name> → device::Device → io::BlockCache → exfat／ext4::Volume → vfs
 //
 // 每個掛載都有自己的區塊快取與檔案系統實例，放在一個固定大小的表裡；緩衝區
-// 與大寫表從堆積配置，卸載時還回去。目前認得的格式只有 exFAT，而且唯讀。
+// 與大寫表從堆積配置，卸載時還回去。格式由各驅動程式的 identify() 依魔數認出：
+// exFAT 可讀寫，ext2／ext3／ext4 唯讀。
 //
 // Mount a file system living on a block device into the VFS. The root file
 // system and devfs are mounted at boot; this handles volumes mounted later,
 // such as an exFAT USB stick:
 //
-//     /dev/<name> → device::Device → io::BlockCache → exfat::Volume → vfs
+//     /dev/<name> → device::Device → io::BlockCache → exfat/ext4::Volume → vfs
 //
 // Each mount has its own block cache and file system instance, kept in a
 // fixed-size table; the buffers and the up-case table come from the heap and
-// go back to it on unmount. The only format recognized today is exFAT, and it
-// is read-only.
+// go back to it on unmount. The format is recognized by each driver's
+// identify() from its magic number: exFAT read-write, ext2/ext3/ext4
+// read-only.
 namespace shirley::fs {
 
 // 同時可以掛載的裝置數。 / How many devices can be mounted at once.
