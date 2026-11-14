@@ -15,6 +15,18 @@ struct uptime_info { uint64_t ticks, frequency; };
 struct mount_info { char path[512], filesystem[16]; };
 struct mount_request { const char* device; const char* path; char* reason; uint64_t capacity; };
 struct block_request { const char* path; uint64_t block; void* buffer; uint64_t capacity; };
+struct system_info {
+    char arch[32];
+    char cpu_vendor[32];
+    char platform[32];
+    char machine[64];
+    uint64_t total_memory_bytes;
+    uint64_t free_memory_bytes;
+    uint64_t heap_capacity_bytes;
+    uint64_t heap_available_bytes;
+    uint64_t timer_ticks;
+    uint64_t timer_frequency;
+};
 
 static char cwd[PATH_MAX] = "/";
 static char line[LINE_MAX];
@@ -65,6 +77,7 @@ static const char* description_rm(void){return "delete a file or an empty direct
 static const char* description_mv(void){return "rename or move a file or directory";}
 static const char* description_sync(void){return "write cached changes to the disks";}
 static const char* description_uptime(void){return "show kernel timer ticks and elapsed uptime";}
+static const char* description_sysinfo(void){return "collect and display comprehensive system and hardware diagnostics";}
 static const char* description_blk(void){return "read and dump one block from a kernel block device";}
 static const char* description_exec(void){return "load and run a user-space ELF program by path";}
 static const char* description_hello(void){return "run the user-space executable /bin/hello";}
@@ -82,6 +95,50 @@ static void mv_cmd(void){if(argc<3){putln("mv: needs a source and a destination"
 static void sync_cmd(void){long long r=shirley_syscall(17);if(r<0)report("sync","/",r);}
 static void umount_cmd(void){if(argc<2){putln("umount: needs a path");return;}char path[PATH_MAX],reason[64];reason[0]=0;resolve(argv[1],path);if(shirley_syscall(13,path,reason,sizeof(reason))<0){puts2("umount: ");puts2(argv[1]);puts2(": ");putln(reason);}}
 static void uptime_cmd(void){struct uptime_info u;if(shirley_syscall(8,&u)<0||!u.frequency){putln("uptime: no timer");return;}puts2("  up ");number(u.ticks/u.frequency);puts2(" s (");number(u.ticks);puts2(" timer interrupts at ");number(u.frequency);putln(" Hz)");}
+static void sysinfo_cmd(void){
+    struct system_info s;
+    if(shirley_syscall(18,&s)<0){putln("sysinfo: syscall failed");return;}
+    if(argc>1&&equal(argv[1],"-a")){
+        puts2("ShirleyOS 0.6.0 ");puts2(s.arch);puts2(" ");puts2(s.cpu_vendor);puts2(" ");puts2(s.platform);puts2(" (");puts2(s.machine);putln(")");
+        return;
+    }
+    putln("==================================================");
+    putln("       ShirleyOS System Diagnostics (sysinfo)     ");
+    putln("==================================================");
+    puts2("  OS Version   : ShirleyOS 0.6.0 \"console\"\n");
+    puts2("  Architecture : ");putln(s.arch);
+    puts2("  Processor    : ");putln(s.cpu_vendor);
+    puts2("  Platform     : ");putln(s.platform);
+    puts2("  Machine      : ");putln(s.machine);
+    puts2("  Uptime       : ");
+    if(s.timer_frequency){number(s.timer_ticks/s.timer_frequency);puts2(" s (");number(s.timer_ticks);puts2(" ticks @ ");number(s.timer_frequency);puts2(" Hz)");}
+    else puts2("no timer");
+    puts2("\n");
+    puts2("  Memory Total : ");number(s.total_memory_bytes/(1024*1024));puts2(" MiB (Free: ");number(s.free_memory_bytes/(1024*1024));puts2(" MiB, ");number(s.free_memory_bytes/4096);puts2(" pages)\n");
+    puts2("  Kernel Heap  : ");number(s.heap_capacity_bytes/1024);puts2(" KiB (Free: ");number(s.heap_available_bytes/1024);puts2(" KiB)\n");
+    struct node_info rnode;
+    if(shirley_syscall(6,"/dev/rust0",&rnode)==0){
+        puts2("  Rust Subsys  : Active (/dev/rust0 telemetry ready)\n");
+    }else{
+        puts2("  Rust Subsys  : Not detected\n");
+    }
+    puts2("\nMounted Filesystems:\n");
+    struct mount_info m;
+    for(uint64_t i=0;shirley_syscall(10,i,&m)==0;++i){
+        puts2("  ");puts2(m.path);
+        for(size_t k=length(m.path);k<14;++k)puts2(" ");
+        puts2(" -> ");putln(m.filesystem);
+    }
+    puts2("\nRegistered Devices (/dev):\n  ");
+    struct node_info dnode;
+    int first_dev=1;
+    for(uint64_t i=0;shirley_syscall(7,"/dev",i,&dnode)==0;++i){
+        if(!first_dev)puts2(", ");
+        puts2(dnode.name);
+        first_dev=0;
+    }
+    puts2("\n==================================================\n");
+}
 static void blk_cmd(void){if(argc<3){putln("blk: needs a device and a block number");return;}char path[PATH_MAX];unsigned char b[512];uint64_t block=0;resolve(argv[1],path);for(char*p=argv[2];*p;++p)block=block*10+(uint64_t)(*p-'0');struct block_request r={path,block,b,sizeof(b)};long long n=shirley_syscall(11,&r);if(n<0){putln("blk: read failed");return;}const char*h="0123456789abcdef";for(int i=0;i<n;i+=16){for(int j=0;j<16&&i+j<n;++j){char x[3]={h[b[i+j]>>4],h[b[i+j]&15],' '};write(1,x,3);}puts2(" ");for(int j=0;j<16&&i+j<n;++j){char c=b[i+j]>=' '&&b[i+j]<='~'?(char)b[i+j]:'.';write(1,&c,1);}puts2("\n");}}
 static void exec_cmd(const char* requested){char path[PATH_MAX];resolve(requested,path);long long status=shirley_syscall(9,path);puts2("[");puts2(path);puts2(" exited with status ");number((uint64_t)status&255);putln("]");}
 
@@ -96,7 +153,7 @@ static const struct command shell_commands[]={
 };
 static const struct command kernel_commands[]={
     {"ls",ls,description_ls},{"cat",cat_file,description_cat},{"stat",stat_cmd,description_stat},
-    {"mount",mount_cmd,description_mount},{"umount",umount_cmd,description_umount},{"mkdir",mkdir_cmd,description_mkdir},{"rm",rm_cmd,description_rm},{"mv",mv_cmd,description_mv},{"sync",sync_cmd,description_sync},{"uptime",uptime_cmd,description_uptime},{"blk",blk_cmd,description_blk}
+    {"mount",mount_cmd,description_mount},{"umount",umount_cmd,description_umount},{"mkdir",mkdir_cmd,description_mkdir},{"rm",rm_cmd,description_rm},{"mv",mv_cmd,description_mv},{"sync",sync_cmd,description_sync},{"uptime",uptime_cmd,description_uptime},{"sysinfo",sysinfo_cmd,description_sysinfo},{"uname",sysinfo_cmd,description_sysinfo},{"blk",blk_cmd,description_blk}
 };
 static const struct command executable_commands[]={
     {"exec",exec_command,description_exec},{"hello",hello_cmd,description_hello}

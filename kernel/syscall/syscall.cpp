@@ -2,6 +2,8 @@
 
 #include "shirley/arch.hpp"
 #include "shirley/device_mount.hpp"
+#include "shirley/heap.hpp"
+#include "shirley/memory.hpp"
 #include "shirley/process.hpp"
 #include "shirley/platform.hpp"
 #include "shirley/user_api.hpp"
@@ -159,6 +161,22 @@ void dispatch(Context& context) {
     case Number::Sync:
         context.result = status(vfs::sync());
         return;
+    case Number::SystemInfo: {
+        auto* info = static_cast<user_api::SystemInfo*>(as_pointer(context.arguments[0]));
+        if (info == nullptr) { context.result = -1; return; }
+        copy(info->arch, sizeof(info->arch), arch::name());
+        copy(info->cpu_vendor, sizeof(info->cpu_vendor), arch::cpu_vendor());
+        copy(info->platform, sizeof(info->platform), platform::name());
+        copy(info->machine, sizeof(info->machine), platform::machine());
+        info->total_memory_bytes = static_cast<std::uint64_t>(memory::total_pages()) * memory::page_size;
+        info->free_memory_bytes = static_cast<std::uint64_t>(memory::free_pages()) * memory::page_size;
+        info->heap_capacity_bytes = heap::capacity();
+        info->heap_available_bytes = heap::available();
+        info->timer_ticks = platform::timer_ticks();
+        info->timer_frequency = platform::timer_frequency();
+        context.result = 0;
+        return;
+    }
     default:
         context.result = -1;
         return;

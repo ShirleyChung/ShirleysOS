@@ -180,6 +180,7 @@ void command_help() {
     write_line("  pwd               print the working directory");
     write_line("  stat <path>       show one entry's details");
     write_line("  echo [text] [> p] print the arguments, or write them to a path");
+    write_line("  sysinfo           system diagnostics, memory, and devices report");
     write_line("  mem               page allocator and heap totals");
     write_line("  uptime            time since boot, counted in timer interrupts");
     write_line("  devices           list the registered devices");
@@ -497,6 +498,71 @@ void command_version() {
     write_line(" bytes of files");
 }
 
+void command_sysinfo() {
+    write_line("==================================================");
+    write_line("       ShirleyOS System Diagnostics (sysinfo)     ");
+    write_line("==================================================");
+    write("  OS Version   : ShirleyOS 0.6.0 \"console\"\n");
+    write("  Architecture : "); write_line(arch::name());
+    write("  Processor    : "); write_line(arch::cpu_vendor());
+    write("  Platform     : "); write_line(platform::name());
+    write("  Machine      : "); write_line(platform::machine());
+    
+    const auto rate = platform::timer_frequency();
+    const auto ticks = platform::timer_ticks();
+    write("  Uptime       : ");
+    if (rate != 0) {
+        write_number(ticks / rate);
+        write(" s (");
+        write_number(ticks);
+        write(" ticks @ ");
+        write_number(rate);
+        write_line(" Hz)");
+    } else {
+        write_line("no timer");
+    }
+
+    write("  Memory Total : ");
+    write_number(static_cast<std::uint64_t>(memory::total_pages()) * memory::page_size / (1024 * 1024));
+    write(" MiB (Free: ");
+    write_number(static_cast<std::uint64_t>(memory::free_pages()) * memory::page_size / (1024 * 1024));
+    write(" MiB, ");
+    write_number(memory::free_pages());
+    write_line(" pages)");
+
+    write("  Kernel Heap  : ");
+    write_number(heap::capacity() / 1024);
+    write(" KiB (Free: ");
+    write_number(heap::available() / 1024);
+    write_line(" KiB)");
+
+    vfs::Node rnode;
+    if (vfs::stat("/dev/rust0", rnode, working_directory)) {
+        write_line("  Rust Subsys  : Active (/dev/rust0 telemetry ready)");
+    } else {
+        write_line("  Rust Subsys  : Not detected");
+    }
+
+    write_line("\nMounted Filesystems:");
+    for (std::size_t index = 0; index < vfs::mount_count(); ++index) {
+        write("  ");
+        const char* path = vfs::mount_path(index);
+        write(path);
+        for (auto column = text::length(path); column < 14; ++column) write(" ");
+        auto* filesystem = vfs::mount_filesystem(index);
+        write(" -> ");
+        write_line(filesystem != nullptr ? filesystem->name() : "none");
+    }
+
+    write("\nRegistered Devices (/dev):\n  ");
+    const auto dev_total = device::count();
+    for (std::size_t index = 0; index < dev_total; ++index) {
+        if (index > 0) write(", ");
+        write(device::at(index)->name);
+    }
+    write_line("\n==================================================");
+}
+
 // 這台機器目前有哪些裝置，以及主控台的輸入是從哪些裝置來的。shell 只認得
 // 裝置的名字與種類，不知道 kbd0 背後是 IRQ1 還是 0x60。
 //
@@ -682,6 +748,7 @@ void execute() {
     if (text::equals(command, "stat")) return command_stat();
     if (text::equals(command, "echo")) return command_echo();
     if (text::equals(command, "mem")) return command_mem();
+    if (text::equals(command, "sysinfo") || text::equals(command, "uname")) return command_sysinfo();
     if (text::equals(command, "uptime")) return command_uptime();
     if (text::equals(command, "devices")) return command_devices();
     if (text::equals(command, "mount")) return command_mount();

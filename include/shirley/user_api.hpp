@@ -43,4 +43,18 @@ struct BlockReadRequest {
     std::uint64_t capacity;
 };
 
+// 系統核心與硬體環境資訊
+struct SystemInfo {
+    char arch[32];
+    char cpu_vendor[32];
+    char platform[32];
+    char machine[64];
+    std::uint64_t total_memory_bytes;
+    std::uint64_t free_memory_bytes;
+    std::uint64_t heap_capacity_bytes;
+    std::uint64_t heap_available_bytes;
+    std::uint64_t timer_ticks;
+    std::uint64_t timer_frequency;
+};
+
 } // namespace shirley::user_api
