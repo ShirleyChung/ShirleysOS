@@ -1,4 +1,9 @@
 build/
 build-*/
 rust/target/
+usb-installer/*.img
+usb-installer/*.dmg
+dist/*.tar.gz
+dist/*.zip
+dist/shirleyos-*-update-*/
 .DS_Store

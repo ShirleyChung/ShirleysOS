@@ -1,0 +1,243 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# ShirleyOS Cross-Platform QEMU Runner (macOS / Linux / Windows)
+# ==============================================================================
+# Usage:
+#   ./run [target] [options]
+# Targets:
+#   x86_64 (default), x86_64_uefi, arm64, arm64_uefi, apple_silicon
+# Options:
+#   -d, --display      Open graphical QEMU window (needed for PS/2 keyboard)
+#   -g, --debug        Start QEMU in GDB wait state (-s -S)
+#   -u, --usb          Boot with USB installer image attached
+#   -m, --mem SIZE     RAM size (default: 512M)
+#   -h, --help         Show this help message
+# ==============================================================================
+
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# 偵測作業系統環境
+OS_TYPE="unknown"
+case "$(uname -s)" in
+    Darwin*)  OS_TYPE="macos" ;;
+    Linux*)   OS_TYPE="linux" ;;
+    CYGWIN*|MINGW*|MSYS*) OS_TYPE="windows" ;;
+    *)        OS_TYPE="other" ;;
+esac
+
+# 預設參數
+TARGET="x86_64"
+USE_DISPLAY=0
+DEBUG_MODE=0
+ATTACH_USB=0
+MEM_SIZE="512M"
+
+# 參數解析
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        x86_64|amd64) TARGET="x86_64"; shift ;;
+        x86_64_uefi)  TARGET="x86_64_uefi"; shift ;;
+        arm64|aarch64) TARGET="arm64"; shift ;;
+        arm64_uefi)   TARGET="arm64_uefi"; shift ;;
+        apple_silicon) TARGET="apple_silicon"; shift ;;
+        -d|--display) USE_DISPLAY=1; shift ;;
+        -g|--debug)   DEBUG_MODE=1; shift ;;
+        -u|--usb)     ATTACH_USB=1; shift ;;
+        -m|--mem)     MEM_SIZE="$2"; shift 2 ;;
+        -h|--help)
+            echo "ShirleyOS Cross-Platform QEMU Runner"
+            echo "Usage: $0 [target] [options]"
+            echo "Targets: x86_64 (default), x86_64_uefi, arm64, arm64_uefi"
+            echo "Options:"
+            echo "  -d, --display   Open QEMU display window"
+            echo "  -g, --debug     Wait for GDB connection on :1234"
+            echo "  -u, --usb       Attach ShirleyOS USB installer drive"
+            echo "  -m, --mem SIZE  Memory allocation (e.g., 512M, 1G)"
+            exit 0
+            ;;
+        *)
+            echo "Error: Unknown argument '$1'" >&2
+            echo "Try '$0 --help' for usage." >&2
+            exit 1
+            ;;
+    esac
+done
+
+# Apple Silicon 無 QEMU 模擬器模型
+if [ "$TARGET" = "apple_silicon" ]; then
+    echo "[Error] Apple Silicon target currently has no QEMU machine model." >&2
+    echo "        Use './build apple_silicon' to compile the kernel ELF." >&2
+    exit 1
+fi
+
+# 尋找 QEMU 執行檔 (跨 macOS / Linux / Windows)
+find_qemu() {
+    local bin_name="$1"
+    
+    # 1. 檢查 PATH
+    if command -v "$bin_name" >/dev/null 2>&1; then
+        command -v "$bin_name"
+        return 0
+    fi
+    if command -v "${bin_name}.exe" >/dev/null 2>&1; then
+        command -v "${bin_name}.exe"
+        return 0
+    fi
+
+    # 2. 檢查 Windows 常見路徑
+    local win_paths=(
+        "/c/Program Files/qemu/${bin_name}.exe"
+        "/c/Program Files (x86)/qemu/${bin_name}.exe"
+        "C:\\Program Files\\qemu\\${bin_name}.exe"
+        "C:\\Program Files (x86)\\qemu\\${bin_name}.exe"
+    )
+    for p in "${win_paths[@]}"; do
+        if [ -f "$p" ]; then
+            echo "$p"
+            return 0
+        fi
+    done
+
+    # 3. 檢查 macOS Homebrew / MacPorts
+    local mac_paths=(
+        "/opt/homebrew/bin/$bin_name"
+        "/usr/local/bin/$bin_name"
+        "/opt/local/bin/$bin_name"
+    )
+    for p in "${mac_paths[@]}"; do
+        if [ -x "$p" ]; then
+            echo "$p"
+            return 0
+        fi
+    done
+
+    # 4. 檢查 Linux /usr/bin
+    if [ -x "/usr/bin/$bin_name" ]; then
+        echo "/usr/bin/$bin_name"
+        return 0
+    fi
+
+    return 1
+}
+
+# 根據架構選擇 QEMU 命令
+ARCH_NAME="x86_64"
+if [[ "$TARGET" == *"arm64"* ]]; then
+    ARCH_NAME="arm64"
+    QEMU_BIN=$(find_qemu "qemu-system-aarch64") || {
+        echo "[Error] 'qemu-system-aarch64' not found!" >&2
+        echo "  macOS:   brew install qemu" >&2
+        echo "  Ubuntu:  sudo apt-get install qemu-system-arm" >&2
+        echo "  Windows: Install QEMU from https://www.qemu.org/download/" >&2
+        exit 1
+    }
+else
+    ARCH_NAME="x86_64"
+    QEMU_BIN=$(find_qemu "qemu-system-x86_64") || {
+        echo "[Error] 'qemu-system-x86_64' not found!" >&2
+        echo "  macOS:   brew install qemu" >&2
+        echo "  Ubuntu:  sudo apt-get install qemu-system-x86" >&2
+        echo "  Windows: Install QEMU from https://www.qemu.org/download/" >&2
+        exit 1
+    }
+fi
+
+echo "=========================================================="
+echo "  ShirleyOS QEMU Runner"
+echo "  Host OS     : $OS_TYPE ($(uname -m))"
+echo "  Target      : $TARGET"
+echo "  QEMU Binary : $QEMU_BIN"
+echo "  Memory      : $MEM_SIZE"
+echo "=========================================================="
+
+# 確保已編譯最新產物
+echo "[1/2] Checking & Building $TARGET image..."
+if [ -f "$ROOT_DIR/build.sh" ]; then
+    bash "$ROOT_DIR/build.sh" "$TARGET" --quick
+else
+    bash "$ROOT_DIR/scripts/build.sh" "$TARGET" >/dev/null
+fi
+
+# 尋找 UEFI 韌體 (若為 UEFI 目標)
+UEFI_FW=""
+if [[ "$TARGET" == *"uefi"* ]]; then
+    if [ -n "${SHIRLEY_UEFI_FIRMWARE:-}" ] && [ -f "$SHIRLEY_UEFI_FIRMWARE" ]; then
+        UEFI_FW="$SHIRLEY_UEFI_FIRMWARE"
+    else
+        UEFI_FW=$(bash "$ROOT_DIR/scripts/find-uefi-firmware.sh" "$ARCH_NAME" 2>/dev/null || true)
+        if [ -z "$UEFI_FW" ] || [ ! -f "$UEFI_FW" ]; then
+            # Windows 常見路徑檢測
+            win_fw_paths=(
+                "/c/Program Files/qemu/share/edk2-${ARCH_NAME}-code.fd"
+                "/c/Program Files/qemu/share/OVMF_CODE.fd"
+            )
+            for w in "${win_fw_paths[@]}"; do
+                if [ -f "$w" ]; then UEFI_FW="$w"; break; fi
+            done
+        fi
+    fi
+    if [ -z "$UEFI_FW" ] || [ ! -f "$UEFI_FW" ]; then
+        echo "[Error] UEFI firmware for $ARCH_NAME not found." >&2
+        echo "  Please set SHIRLEY_UEFI_FIRMWARE or install OVMF/EDK2." >&2
+        exit 1
+    fi
+    echo "  UEFI FW     : $UEFI_FW"
+fi
+
+# 設定執行參數
+QEMU_ARGS=("-m" "$MEM_SIZE" "-monitor" "none" "-serial" "stdio")
+
+if [ "$USE_DISPLAY" -eq 1 ]; then
+    echo "[Info] Display window enabled. Type in the window for PS/2 input."
+else
+    QEMU_ARGS+=("-nographic")
+    echo "[Info] Running in terminal console (Ctrl-A then X to quit QEMU)."
+fi
+
+if [ "$DEBUG_MODE" -eq 1 ]; then
+    echo "[Info] GDB stub enabled. Waiting for gdb on localhost:1234..."
+    QEMU_ARGS+=("-s" "-S")
+fi
+
+# 附加 USB 安裝碟映像 (若指定)
+USB_IMG="$ROOT_DIR/usb-installer/shirleyos-${ARCH_NAME}-installer.img"
+if [ "$ATTACH_USB" -eq 1 ]; then
+    if [ ! -f "$USB_IMG" ]; then
+        echo "[Warn] USB image '$USB_IMG' not found. Creating now..."
+        "$ROOT_DIR/usbinstall" --arch "$ARCH_NAME" --no-prompt
+    fi
+    if [ -f "$USB_IMG" ]; then
+        echo "  USB Disk    : $USB_IMG (Attached)"
+        QEMU_ARGS+=("-drive" "format=raw,file=$USB_IMG,if=none,id=usbstick" \
+                    "-device" "nec-usb-xhci,id=xhci" \
+                    "-device" "usb-storage,bus=xhci.0,drive=usbstick")
+    fi
+fi
+
+# 根據 Target 啟動 QEMU
+echo "[2/2] Launching QEMU..."
+case "$TARGET" in
+    x86_64)
+        IMAGE_FILE="$ROOT_DIR/build/x86_64-make/shirley-x86_64.img"
+        exec "$QEMU_BIN" "${QEMU_ARGS[@]}" -drive "format=raw,file=$IMAGE_FILE"
+        ;;
+    x86_64_uefi)
+        ESP_DIR="$ROOT_DIR/build/x86_64_uefi-make/esp"
+        exec "$QEMU_BIN" -machine q35 "${QEMU_ARGS[@]}" \
+            -drive "if=pflash,format=raw,readonly=on,file=$UEFI_FW" \
+            -drive "format=raw,file=fat:rw:$ESP_DIR"
+        ;;
+    arm64)
+        KERNEL_ELF="$ROOT_DIR/build/arm64-make/shirley-kernel.elf"
+        exec "$QEMU_BIN" -M virt -cpu cortex-a72 "${QEMU_ARGS[@]}" \
+            -kernel "$KERNEL_ELF"
+        ;;
+    arm64_uefi)
+        ESP_DIR="$ROOT_DIR/build/arm64_uefi-make/esp"
+        exec "$QEMU_BIN" -M virt -cpu cortex-a72 "${QEMU_ARGS[@]}" \
+            -drive "if=pflash,format=raw,readonly=on,file=$UEFI_FW" \
+            -drive "format=raw,file=fat:rw:$ESP_DIR"
+        ;;
+esac
