@@ -195,6 +195,7 @@ void command_help() {
     write_line("  exec <path>       load and run a program from the file system");
     write_line("  hello             run /bin/hello");
     write_line("  reboot            restart the machine");
+    write_line("  shutdown [-r]     bring the system down cleanly and power off");
     write_line("  poweroff          shut the machine down");
 }
 
@@ -943,6 +944,21 @@ void execute() {
         console::write("[kernel] Flushing caches and rebooting...\n");
         vfs::sync();
         platform::restart();
+    }
+    if (text::equals(command, "shutdown")) {
+        bool reboot_mode = false;
+        for (std::size_t a = 1; a < argument_count; ++a) {
+            if (text::equals(arguments[a], "-r")) reboot_mode = true;
+        }
+        if (reboot_mode) {
+            console::write("[kernel] Flushing caches and rebooting...\n");
+            vfs::sync();
+            platform::restart();
+        } else {
+            console::write("[kernel] Flushing caches and powering off...\n");
+            vfs::sync();
+            platform::power_off();
+        }
     }
     if (text::equals(command, "poweroff")) {
         console::write("[kernel] Flushing caches and powering off...\n");

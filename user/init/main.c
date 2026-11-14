@@ -84,6 +84,9 @@ static void init_aliases(void) {
     copy(aliases[2].name, sizeof(aliases[2].name), "restart");
     copy(aliases[2].value, sizeof(aliases[2].value), "reboot");
     aliases[2].active = 1;
+    copy(aliases[3].name, sizeof(aliases[3].name), "halt");
+    copy(aliases[3].value, sizeof(aliases[3].value), "shutdown");
+    aliases[3].active = 1;
 }
 
 static void set_alias(const char* name, const char* value) {
@@ -150,6 +153,7 @@ static const char* description_blk(void){return "read and dump one block from a 
 static const char* description_exec(void){return "load and run a user-space ELF program by path";}
 static const char* description_hello(void){return "run the user-space executable /bin/hello";}
 static const char* description_reboot(void){return "flush filesystem caches, terminate processes, and reboot the system";}
+static const char* description_shutdown(void){return "bring the system down cleanly and power off (shutdown [-r])";}
 static const char* description_poweroff(void){return "flush filesystem caches, terminate processes, and power off the machine";}
 static void ls(void){ char path[PATH_MAX]; struct node_info n; resolve(argc>1?argv[1]:".",path); if(shirley_syscall(6,path,&n)<0){putln("ls: not found");return;} if(n.type!=1){putln(n.name);return;} for(uint64_t i=0;shirley_syscall(7,path,i,&n)==0;++i){puts2("  ");puts2(n.name);if(n.type==1)puts2("/");puts2("\n");} }
 static void cat_file(void){ if(argc<2){putln("cat: needs a file to print");return;} char path[PATH_MAX],b[256];resolve(argv[1],path);int fd=open(path,O_RDONLY);if(fd<0){putln("cat: open failed");return;}ssize_t n;while((n=read(fd,b,sizeof(b)))>0)write(1,b,(size_t)n);close(fd); }
@@ -419,12 +423,19 @@ static void poweroff_cmd(void){
     puts2("Powering off machine...\n");
     shirley_syscall(21);
 }
+static void shutdown_cmd(void){
+    for (int a = 1; a < argc; ++a) {
+        if (equal(argv[a], "-r")) { reboot_cmd(); return; }
+    }
+    poweroff_cmd();
+}
 
 static const struct command shell_commands[]={
     {"help",help,description_help},{"cd",cd_cmd,description_cd},{"pwd",pwd_cmd,description_pwd},
     {"echo",echo_cmd,description_echo},{"clear",clear_cmd,description_clear},
     {"alias",alias_cmd,description_alias},{"unalias",unalias_cmd,description_unalias},
-    {"reboot",reboot_cmd,description_reboot},{"poweroff",poweroff_cmd,description_poweroff}
+    {"reboot",reboot_cmd,description_reboot},{"shutdown",shutdown_cmd,description_shutdown},
+    {"poweroff",poweroff_cmd,description_poweroff}
 };
 static const struct command kernel_commands[]={
     {"ls",ls,description_ls},{"cat",cat_file,description_cat},{"stat",stat_cmd,description_stat},
