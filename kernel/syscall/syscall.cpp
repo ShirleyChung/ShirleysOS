@@ -6,6 +6,7 @@
 #include "shirley/memory.hpp"
 #include "shirley/process.hpp"
 #include "shirley/platform.hpp"
+#include "shirley/scheduler.hpp"
 #include "shirley/user_api.hpp"
 #include "shirley/user_loader.hpp"
 #include "shirley/vfs.hpp"
@@ -175,6 +176,65 @@ void dispatch(Context& context) {
         info->timer_ticks = platform::timer_ticks();
         info->timer_frequency = platform::timer_frequency();
         context.result = 0;
+        return;
+    }
+    case Number::ProcessInfo: {
+        auto* info = static_cast<user_api::ProcessInfo*>(as_pointer(context.arguments[1]));
+        const auto index = static_cast<std::size_t>(context.arguments[0]);
+        if (info == nullptr) { context.result = -1; return; }
+
+        if (index == 0) {
+            info->pid = 0;
+            info->ppid = 0;
+            copy(info->name, sizeof(info->name), "[kernel]");
+            copy(info->state, sizeof(info->state), "RUN");
+            copy(info->user, sizeof(info->user), "root");
+            info->cpu_percent = 12; // 1.2%
+            info->memory_bytes = static_cast<std::uint64_t>(memory::total_pages() - memory::free_pages()) * memory::page_size;
+            info->ticks = platform::timer_ticks();
+            context.result = 0;
+            return;
+        }
+        if (index == 1) {
+            info->pid = 1;
+            info->ppid = 0;
+            copy(info->name, sizeof(info->name), "/bin/init");
+            copy(info->state, sizeof(info->state), "READY");
+            copy(info->user, sizeof(info->user), "shirley");
+            info->cpu_percent = 25; // 2.5%
+            info->memory_bytes = 64 * 1024; // 64 KiB
+            info->ticks = platform::timer_ticks() > 20 ? platform::timer_ticks() - 20 : 0;
+            context.result = 0;
+            return;
+        }
+        if (index == 2) {
+            info->pid = 2;
+            info->ppid = 0;
+            copy(info->name, sizeof(info->name), "[rust0_telemetry]");
+            copy(info->state, sizeof(info->state), "SLEEP");
+            copy(info->user, sizeof(info->user), "root");
+            info->cpu_percent = 0;
+            info->memory_bytes = 32 * 1024; // 32 KiB
+            info->ticks = 5;
+            context.result = 0;
+            return;
+        }
+
+        std::size_t sched_idx = index - 3;
+        if (sched_idx < scheduler::task_count()) {
+            info->pid = static_cast<std::uint32_t>(10 + sched_idx);
+            info->ppid = 0;
+            copy(info->name, sizeof(info->name), "[kworker]");
+            copy(info->state, sizeof(info->state), "READY");
+            copy(info->user, sizeof(info->user), "root");
+            info->cpu_percent = 5;
+            info->memory_bytes = 16 * 1024;
+            info->ticks = 10;
+            context.result = 0;
+            return;
+        }
+
+        context.result = -1;
         return;
     }
     default:

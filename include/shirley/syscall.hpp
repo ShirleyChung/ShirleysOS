@@ -39,6 +39,7 @@ enum class Number : std::uint64_t {
     Rename = 16,        // rename(from, to)
     Sync = 17,          // sync()
     SystemInfo = 18,    // sysinfo(info)
+    ProcessInfo = 19,   // process_info(index, info)
 };
 
 // Architecture adapters fill arguments in the common syscall register order.

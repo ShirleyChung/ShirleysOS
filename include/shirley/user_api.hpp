@@ -57,4 +57,16 @@ struct SystemInfo {
     std::uint64_t timer_frequency;
 };
 
+// 行程與工作資源監控資訊 (供類似 top 的工具使用)
+struct ProcessInfo {
+    std::uint32_t pid;
+    std::uint32_t ppid;
+    char name[32];
+    char state[16];           // "RUNNING", "READY", "SLEEPING", "BLOCKED"
+    char user[16];            // "root", "shirley"
+    std::uint32_t cpu_percent;// 十分之一百分比 (例如 25 代表 2.5%)
+    std::uint64_t memory_bytes;
+    std::uint64_t ticks;
+};
+
 } // namespace shirley::user_api
