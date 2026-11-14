@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ShirleyOS 簡明架構與系統能力報告</title>
+    <style>
+        :root {
+            --bg: #0b1120;
+            --surface: #1e293b;
+            --surface-hover: #283548;
+            --border: #334155;
+            --text-main: #f8fafc;
+            --text-sub: #94a3b8;
+            --layer-5: #a855f7; /* Userland 紫 */
+            --layer-4: #3b82f6; /* Subsystems 藍 */
+            --layer-3: #06b6d4; /* Kernel 藍綠 */
+            --layer-2: #10b981; /* Arch/Platform 綠 */
+            --layer-1: #f59e0b; /* Boot 琥珀 */
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background-color: var(--bg);
+            color: var(--text-main);
+            line-height: 1.6;
+            padding: 2rem 1rem;
+        }
+
+        .container {
+            max-width: 960px;
+            margin: 0 auto;
+        }
+
+        /* 頂部標題 */
+        header {
+            text-align: center;
+            margin-bottom: 3rem;
+        }
+
+        .tag {
+            display: inline-block;
+            font-size: 0.8rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: #38bdf8;
+            background: rgba(56, 189, 248, 0.12);
+            padding: 0.35rem 0.85rem;
+            border-radius: 9999px;
+            margin-bottom: 1rem;
+            border: 1px solid rgba(56, 189, 248, 0.3);
+        }
+
+        h1 {
+            font-size: 2.4rem;
+            font-weight: 800;
+            letter-spacing: -0.02em;
+            margin-bottom: 0.75rem;
+        }
+
+        p.lead {
+            font-size: 1.1rem;
+            color: var(--text-sub);
+            max-width: 680px;
+            margin: 0 auto;
+        }
+
+        /* 核心堆疊視覺化 (The 5-Layer Stack) */
+        .stack-section {
+            margin-bottom: 3.5rem;
+        }
+
+        .section-title {
+            font-size: 1.4rem;
+            font-weight: 700;
+            margin-bottom: 1.25rem;
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+        }
+
+        .stack-wrapper {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+
+        .stack-card {
+            background: var(--surface);
+            border-radius: 12px;
+            padding: 1.25rem 1.5rem;
+            border-left: 6px solid;
+            display: grid;
+            grid-template-columns: 140px 1fr 220px;
+            align-items: center;
+            gap: 1.5rem;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2);
+            transition: transform 0.15s ease;
+        }
+
+        .stack-card:hover {
+            transform: translateX(4px);
+            background: var(--surface-hover);
+        }
+
+        .card-l5 { border-color: var(--layer-5); }
+        .card-l4 { border-color: var(--layer-4); }
+        .card-l3 { border-color: var(--layer-3); }
+        .card-l2 { border-color: var(--layer-2); }
+        .card-l1 { border-color: var(--layer-1); }
+
+        .layer-badge {
+            font-size: 0.75rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 0.25rem;
+        }
+
+        .card-l5 .layer-badge { color: var(--layer-5); }
+        .card-l4 .layer-badge { color: var(--layer-4); }
+        .card-l3 .layer-badge { color: var(--layer-3); }
+        .card-l2 .layer-badge { color: var(--layer-2); }
+        .card-l1 .layer-badge { color: var(--layer-1); }
+
+        .layer-name {
+            font-size: 1.1rem;
+            font-weight: 700;
+            color: #ffffff;
+        }
+
+        .layer-desc {
+            font-size: 0.9rem;
+            color: var(--text-sub);
+        }
+
+        .layer-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.4rem;
+            justify-content: flex-end;
+        }
+
+        .pill {
+            font-size: 0.75rem;
+            padding: 0.2rem 0.55rem;
+            border-radius: 6px;
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid var(--border);
+            color: #e2e8f0;
+            white-space: nowrap;
+        }
+
+        .pill-rust {
+            background: rgba(249, 115, 22, 0.15);
+            color: #fb923c;
+            border-color: rgba(249, 115, 22, 0.4);
+            font-weight: 600;
+        }
+
+        /* 網格卡片 */
+        .grid-2 {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.25rem;
+            margin-bottom: 3.5rem;
+        }
+
+        .info-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1.5rem;
+        }
+
+        .info-card h3 {
+            font-size: 1.15rem;
+            margin-bottom: 0.75rem;
+            color: #38bdf8;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .info-card ul {
+            list-style: none;
+            padding: 0;
+        }
+
+        .info-card li {
+            font-size: 0.9rem;
+            color: var(--text-sub);
+            margin-bottom: 0.6rem;
+            display: flex;
+            align-items: flex-start;
+            gap: 0.5rem;
+        }
+
+        .info-card li::before {
+            content: "✓";
+            color: #34d399;
+            font-weight: bold;
+        }
+
+        /* 簡明代碼/互動區 */
+        .terminal-box {
+            background: #050811;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 1.25rem;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 0.85rem;
+            color: #e2e8f0;
+            margin-bottom: 3.5rem;
+            overflow-x: auto;
+        }
+
+        .prompt-line {
+            color: #38bdf8;
+        }
+
+        .success-text {
+            color: #34d399;
+        }
+
+        /* 響應式佈局 */
+        @media (max-width: 768px) {
+            .stack-card {
+                grid-template-columns: 1fr;
+                gap: 0.75rem;
+            }
+            .layer-tags {
+                justify-content: flex-start;
+            }
+            .grid-2 {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+
+        <!-- 頂部標題區 -->
+        <header>
+            <div class="tag">ShirleyOS Simple Stack Report</div>
+            <h1>ShirleyOS 系統簡明架構與能力報告</h1>
+            <p class="lead">
+                以最直觀的「5 層階梯架構」呈現 ShirleyOS 的軟體堆疊，並展示原生 Rust 高階驅動與子系統的實作整合。
+            </p>
+        </header>
+
+        <!-- 核心堆疊視覺化 (The 5-Layer Stack) -->
+        <section class="stack-section">
+            <h2 class="section-title">
+                <span>層次堆疊模型 (System Architecture Stack)</span>
+            </h2>
+
+            <div class="stack-wrapper">
+                
+                <!-- Layer 5: Userland -->
+                <div class="stack-card card-l5">
+                    <div>
+                        <div class="layer-badge">Layer 5 · Ring 3 / EL0</div>
+                        <div class="layer-name">使用者空間</div>
+                    </div>
+                    <div class="layer-desc">
+                        開機直達 PID 1 Shell (<code>/bin/init</code>)，具備終端互動、行編輯、指令直譯與 ELF 應用程式執行能力。
+                    </div>
+                    <div class="layer-tags">
+                        <span class="pill">/bin/init</span>
+                        <span class="pill">/bin/hello</span>
+                        <span class="pill">Minimal Libc</span>
+                        <span class="pill">17 Syscalls</span>
+                    </div>
+                </div>
+
+                <!-- Layer 4: High-level Subsystems & Drivers -->
+                <div class="stack-card card-l4">
+                    <div>
+                        <div class="layer-badge">Layer 4 · Subsystems</div>
+                        <div class="layer-name">高階驅動與儲存</div>
+                    </div>
+                    <div class="layer-desc">
+                        現代檔案系統與高階安全驅動。負責檔案路徑、磁區快取解析與對外資料處理。<strong>支援由 Rust 語言實作高階驅動！</strong>
+                    </div>
+                    <div class="layer-tags">
+                        <span class="pill pill-rust">Rust Drivers</span>
+                        <span class="pill">VFS & devfs</span>
+                        <span class="pill">exFAT 讀寫</span>
+                        <span class="pill">ext4 唯讀</span>
+                        <span class="pill">VirtIO-Block</span>
+                    </div>
+                </div>
+
+                <!-- Layer 3: Generic Kernel Core -->
+                <div class="stack-card card-l3">
+                    <div>
+                        <div class="layer-badge">Layer 3 · Kernel Core</div>
+                        <div class="layer-name">通用核心服務</div>
+                    </div>
+                    <div class="layer-desc">
+                        跨架構中立的核心中樞。負責全域裝置註冊表、記憶體堆積管理 (Heap/Page)、主控台串流與中斷派發邏輯。
+                    </div>
+                    <div class="layer-tags">
+                        <span class="pill">Device Registry</span>
+                        <span class="pill">1MB BSS Heap</span>
+                        <span class="pill">Page Allocator</span>
+                        <span class="pill">shirley::irq</span>
+                    </div>
+                </div>
+
+                <!-- Layer 2: Architecture & Platform -->
+                <div class="stack-card card-l2">
+                    <div>
+                        <div class="layer-badge">Layer 2 · Hardware Abstraction</div>
+                        <div class="layer-name">CPU 架構與平台</div>
+                    </div>
+                    <div class="layer-desc">
+                        <strong>CPU 架構 (arch/)</strong> 與 <strong>硬體平台 (platform/)</strong> 嚴格分離。負責特權級別切換、分頁表映射與晶片組中斷控制器。
+                    </div>
+                    <div class="layer-tags">
+                        <span class="pill">x86_64 (GDT/IDT)</span>
+                        <span class="pill">ARM64 (EL1)</span>
+                        <span class="pill">8259A / GICv2</span>
+                        <span class="pill">Apple Silicon (AIC)</span>
+                    </div>
+                </div>
+
+                <!-- Layer 1: Firmware & Boot -->
+                <div class="stack-card card-l1">
+                    <div>
+                        <div class="layer-badge">Layer 1 · Early Stage</div>
+                        <div class="layer-name">韌體與開機交接</div>
+                    </div>
+                    <div class="layer-desc">
+                        UEFI PE32+ 與 BIOS 開機載入器，將各平台差異歸一化為統一的 <code>BootInfo</code> 契約後移交控制權。
+                    </div>
+                    <div class="layer-tags">
+                        <span class="pill">UEFI (BOOTX64/AA64)</span>
+                        <span class="pill">BIOS Boot Sector</span>
+                        <span class="pill">FDT Device Tree</span>
+                        <span class="pill">BootInfo ABI</span>
+                    </div>
+                </div>
+
+            </div>
+        </section>
+
+        <!-- 雙欄資訊：設計理念與 Rust 的角色 -->
+        <div class="grid-2">
+            <div class="info-card">
+                <h3>💡 核心設計特點</h3>
+                <ul>
+                    <li><strong>架構與平台解耦</strong>：Apple Silicon 是 ARM64 的一個平台，而非獨立 CPU 架構。</li>
+                    <li><strong>唯一命名抽象</strong>：路徑是核心中唯一的物件名稱，<code>cat /etc/motd</code> 與 <code>cat /dev/kbd0</code> 走相同 VFS 路徑。</li>
+                    <li><strong>低功耗待機</strong>：閒置時執行 <code>hlt</code> / <code>wfi</code>，無輪詢，全字元由中斷驅動。</li>
+                    <li><strong>開機即用</strong>：唯讀根檔案系統 (SHRFS1) 打包進核心，無磁碟驅動亦可運行。</li>
+                </ul>
+            </div>
+
+            <div class="info-card">
+                <h3>🦀 Rust 在架構中的定位</h3>
+                <ul>
+                    <li><strong>置於第 4 層（高階層）</strong>：不碰底層 GDT/IDT 特權碼，專門負責複雜協定與外設驅動。</li>
+                    <li><strong>共用核心堆積</strong>：透過 <code>#[global_allocator]</code> 直接接入 ShirleyOS 核心堆積，享有 <code>Vec</code>、<code>String</code> 等動態能力。</li>
+                    <li><strong>防止記憶體漏洞</strong>：解析外部磁碟與裝置數據時，杜絕緩衝區溢位與釋放後使用 (UAF)。</li>
+                    <li><strong>首個驅動落地</strong>：<code>/dev/rust0</code> 已成功在 x86_64 與 ARM64 雙平台開機註冊並運作。</li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- 終端交互驗證 -->
+        <h2 class="section-title">
+            <span>實機 / QEMU 驗證輸出</span>
+        </h2>
+        <div class="terminal-box">
+            <div><span class="prompt-line">[rust]</span> ShirleyOS Rust Runtime initializing...</div>
+            <div><span class="prompt-line">[rust]</span> Driver '/dev/rust0' successfully registered</div>
+            <div><span class="prompt-line">[rust]</span> High-level Rust drivers ready.</div>
+            <div>Devices: 6</div>
+            <div>[device] console type=char</div>
+            <div>[device] null type=char</div>
+            <div>[device] uart0 type=char</div>
+            <div>[device] kbd0 type=input</div>
+            <div class="success-text">[device] rust0 type=char  &lt;--- Rust 驅動成功註冊！</div>
+            <div>[device] ram0 type=block</div>
+            <div><br></div>
+            <div><span class="prompt-line">shirley:/$</span> cat /dev/rust0</div>
+            <div>--- [ShirleyOS Rust Subsystem v0.1.0] ---</div>
+            <div>Driver Status : Healthy & Active (Safe Rust)</div>
+            <div>Read Session  : #0</div>
+            <div>PRNG Entropy  : 0x00ea4be701d3338e</div>
+            <div>Memory Safety : No buffer overflows / No use-after-free</div>
+            <div>Architecture  : Bare-metal no_std staticlib</div>
+            <div><span class="prompt-line">shirley:/$</span></div>
+        </div>
+
+    </div>
+
+</body>
+</html>

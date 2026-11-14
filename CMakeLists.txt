@@ -122,6 +122,7 @@ set(SHIRLEY_KERNEL_SOURCES
   kernel/process/process.cpp
   kernel/process/scheduler.cpp
   kernel/runtime/compiler_runtime.cpp
+  kernel/runtime/rust_bridge.cpp
   kernel/shell/shell.cpp
   kernel/text/string.cpp
   kernel/text/utf.cpp
@@ -467,15 +468,31 @@ target_include_directories(shirley-kernel-objects PRIVATE
 target_compile_options(shirley-kernel-objects PRIVATE
   $<$<COMPILE_LANGUAGE:C,CXX>:${SHIRLEY_KERNEL_FLAGS}>)
 
+if(SHIRLEY_ARCH STREQUAL x86_64)
+  set(SHIRLEY_RUST_TARGET x86_64-unknown-none)
+else()
+  set(SHIRLEY_RUST_TARGET aarch64-unknown-none)
+endif()
+
+find_program(SHIRLEY_CARGO cargo REQUIRED)
+set(SHIRLEY_RUST_LIB ${CMAKE_SOURCE_DIR}/rust/target/${SHIRLEY_RUST_TARGET}/release/libshirley_rust.a)
+
+add_custom_target(shirley-rust-target ALL
+  COMMAND ${SHIRLEY_CARGO} build --release --target ${SHIRLEY_RUST_TARGET}
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/rust
+  COMMENT "Building ShirleyOS Rust subsystem (${SHIRLEY_RUST_TARGET})"
+  BYPRODUCTS ${SHIRLEY_RUST_LIB}
+)
+
 add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/shirley-kernel.elf
   COMMAND ${SHIRLEY_LLD} -T ${SHIRLEY_LINKER_SCRIPT} --build-id=none
-          -o ${CMAKE_CURRENT_BINARY_DIR}/shirley-kernel.elf $<TARGET_OBJECTS:shirley-kernel-objects>
+          -o ${CMAKE_CURRENT_BINARY_DIR}/shirley-kernel.elf $<TARGET_OBJECTS:shirley-kernel-objects> ${SHIRLEY_RUST_LIB}
   # 目標名稱只建立順序相依；要讓物件檔更新後真的重新連結，
   # 必須把物件檔本身也列為相依。
   # The target name only creates an ordering dependency; the object files
   # themselves must be listed so an updated object actually relinks.
   DEPENDS shirley-kernel-objects $<TARGET_OBJECTS:shirley-kernel-objects>
-          ${SHIRLEY_LINKER_SCRIPT}
+          ${SHIRLEY_LINKER_SCRIPT} ${SHIRLEY_RUST_LIB}
   COMMAND_EXPAND_LISTS)
 add_custom_target(shirley-kernel ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/shirley-kernel.elf)
 

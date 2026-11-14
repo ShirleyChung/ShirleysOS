@@ -10,6 +10,7 @@
 #include "shirley/memory.hpp"
 #include "shirley/platform.hpp"
 #include "shirley/rootfs.hpp"
+#include "shirley/rust_bridge.hpp"
 #include "shirley/scheduler.hpp"
 #include "shirley/shell.hpp"
 #include "shirley/user_loader.hpp"
@@ -110,6 +111,10 @@ extern "C" [[noreturn]] void kernel_main(const shirley::BootInfo* boot_info) {
     // 磁碟驅動程式需要堆積，所以儲存裝置要等到這裡才找。
     // Disk drivers need the heap, so storage is only looked for here.
     shirley::platform::initialize_storage();
+
+    // 初始化高階 Rust 子系統與驅動程式。
+    // Initialize high-level Rust subsystem and drivers.
+    shirley::rust::initialize();
 
     // 中斷向量已就緒，平台中斷控制器也只解除了已註冊驅動程式的那幾條線，
     // 因此在這裡開啟中斷是安全的。

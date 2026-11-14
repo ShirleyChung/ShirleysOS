@@ -1,0 +1,1203 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ShirleyOS 架構與系統能力綜合分析報告</title>
+    <style>
+        :root {
+            --bg-primary: #0f172a;
+            --bg-secondary: #1e293b;
+            --bg-card: #1e293b;
+            --bg-card-hover: #273549;
+            --accent-primary: #38bdf8;
+            --accent-secondary: #818cf8;
+            --accent-emerald: #34d399;
+            --accent-amber: #fbbf24;
+            --accent-rose: #f43f5e;
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --border-color: #334155;
+            --code-bg: #090d16;
+            --nav-width: 280px;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans TC", sans-serif;
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.65;
+            display: flex;
+            min-height: 100vh;
+        }
+
+        /* 側邊導航 */
+        aside.sidebar {
+            width: var(--nav-width);
+            background-color: var(--bg-secondary);
+            border-right: 1px solid var(--border-color);
+            position: fixed;
+            top: 0;
+            bottom: 0;
+            left: 0;
+            overflow-y: auto;
+            padding: 1.5rem 1rem;
+            z-index: 100;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding-bottom: 1.25rem;
+            margin-bottom: 1.25rem;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .brand-logo {
+            width: 36px;
+            height: 36px;
+            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 800;
+            font-size: 1.2rem;
+            color: #0f172a;
+        }
+
+        .brand-title {
+            font-size: 1.1rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            letter-spacing: -0.02em;
+        }
+
+        .brand-subtitle {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        .nav-group-title {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+            margin: 1.25rem 0 0.5rem 0.75rem;
+            font-weight: 600;
+        }
+
+        .nav-list {
+            list-style: none;
+        }
+
+        .nav-item a {
+            display: block;
+            padding: 0.5rem 0.75rem;
+            color: var(--text-secondary);
+            text-decoration: none;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            transition: all 0.15s ease;
+        }
+
+        .nav-item a:hover {
+            color: var(--text-primary);
+            background-color: rgba(56, 189, 248, 0.1);
+        }
+
+        /* 主內容區塊 */
+        main.content {
+            margin-left: var(--nav-width);
+            flex: 1;
+            padding: 2.5rem 3.5rem;
+            max-width: 1300px;
+        }
+
+        /* 標題與橫幅 */
+        header.header {
+            margin-bottom: 2.5rem;
+            padding-bottom: 2rem;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .badge-header {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.25rem 0.75rem;
+            border-radius: 9999px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            background-color: rgba(56, 189, 248, 0.15);
+            color: var(--accent-primary);
+            margin-bottom: 0.75rem;
+            border: 1px solid rgba(56, 189, 248, 0.3);
+        }
+
+        h1.title {
+            font-size: 2.3rem;
+            font-weight: 800;
+            letter-spacing: -0.03em;
+            margin-bottom: 0.75rem;
+            background: linear-gradient(135deg, #ffffff 0%, #cbd5e1 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        p.subtitle {
+            font-size: 1.05rem;
+            color: var(--text-secondary);
+            max-width: 900px;
+        }
+
+        /* 統計指標卡片 */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 1.25rem;
+            margin-bottom: 2.5rem;
+        }
+
+        .stat-card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1.25rem;
+            transition: transform 0.2s, border-color 0.2s;
+        }
+
+        .stat-card:hover {
+            border-color: var(--accent-primary);
+            transform: translateY(-2px);
+        }
+
+        .stat-label {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            font-weight: 600;
+        }
+
+        .stat-value {
+            font-size: 1.8rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin: 0.25rem 0;
+        }
+
+        .stat-desc {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+
+        /* 章節設定 */
+        section {
+            margin-bottom: 3.5rem;
+            scroll-margin-top: 2rem;
+        }
+
+        h2.section-title {
+            font-size: 1.6rem;
+            font-weight: 700;
+            margin-bottom: 1.25rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            color: var(--text-primary);
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 0.5rem;
+        }
+
+        h2.section-title .section-number {
+            color: var(--accent-primary);
+            font-size: 1.2rem;
+            font-weight: 800;
+            background: rgba(56, 189, 248, 0.1);
+            padding: 0.2rem 0.6rem;
+            border-radius: 6px;
+        }
+
+        h3.subsection-title {
+            font-size: 1.2rem;
+            font-weight: 600;
+            margin: 1.75rem 0 0.75rem 0;
+            color: var(--accent-secondary);
+        }
+
+        p {
+            margin-bottom: 1rem;
+            color: var(--text-secondary);
+        }
+
+        /* 標籤 Badge */
+        .badge {
+            display: inline-block;
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+
+        .badge-success { background: rgba(52, 211, 153, 0.15); color: var(--accent-emerald); border: 1px solid rgba(52, 211, 153, 0.3); }
+        .badge-info { background: rgba(56, 189, 248, 0.15); color: var(--accent-primary); border: 1px solid rgba(56, 189, 248, 0.3); }
+        .badge-warning { background: rgba(251, 191, 36, 0.15); color: var(--accent-amber); border: 1px solid rgba(251, 191, 36, 0.3); }
+        .badge-danger { background: rgba(244, 63, 94, 0.15); color: var(--accent-rose); border: 1px solid rgba(244, 63, 94, 0.3); }
+
+        /* 卡片與網格 */
+        .card-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 1.25rem;
+            margin: 1.25rem 0;
+        }
+
+        .card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 1.25rem;
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.75rem;
+        }
+
+        .card-title {
+            font-size: 1.05rem;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        /* 表格樣式 */
+        .table-container {
+            overflow-x: auto;
+            margin: 1.25rem 0;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: left;
+            font-size: 0.9rem;
+        }
+
+        th {
+            background-color: var(--bg-secondary);
+            color: var(--text-primary);
+            padding: 0.85rem 1rem;
+            font-weight: 600;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        td {
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid rgba(51, 65, 85, 0.5);
+            color: var(--text-secondary);
+        }
+
+        tr:last-child td {
+            border-bottom: none;
+        }
+
+        tr:hover td {
+            background-color: rgba(255, 255, 255, 0.02);
+            color: var(--text-primary);
+        }
+
+        /* 代碼區塊 */
+        pre {
+            background-color: var(--code-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 1rem 1.25rem;
+            overflow-x: auto;
+            font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+            font-size: 0.85rem;
+            color: #e2e8f0;
+            margin: 1rem 0;
+            line-height: 1.5;
+        }
+
+        code {
+            font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+            background-color: rgba(255, 255, 255, 0.08);
+            padding: 0.15rem 0.4rem;
+            border-radius: 4px;
+            font-size: 0.85em;
+            color: #38bdf8;
+        }
+
+        /* SVG 圖表容器 */
+        .diagram-container {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin: 1.5rem 0;
+            text-align: center;
+        }
+
+        .diagram-svg {
+            max-width: 100%;
+            height: auto;
+        }
+
+        /* 呼叫提示塊 */
+        .callout {
+            padding: 1rem 1.25rem;
+            border-radius: 8px;
+            margin: 1.25rem 0;
+            border-left: 4px solid var(--accent-primary);
+            background-color: rgba(56, 189, 248, 0.08);
+        }
+
+        .callout-title {
+            font-weight: 600;
+            color: var(--accent-primary);
+            margin-bottom: 0.25rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .callout p {
+            margin: 0;
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        /* 響應式調整 */
+        @media (max-width: 1024px) {
+            aside.sidebar {
+                display: none;
+            }
+            main.content {
+                margin-left: 0;
+                padding: 1.5rem;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- 左側固定目錄 -->
+    <aside class="sidebar">
+        <div class="brand">
+            <div class="brand-logo">S</div>
+            <div>
+                <div class="brand-title">ShirleyOS</div>
+                <div class="brand-subtitle">架構與能力分析報告</div>
+            </div>
+        </div>
+
+        <div class="nav-group-title">總覽與度量</div>
+        <ul class="nav-list">
+            <li class="nav-item"><a href="#overview">1. 專案概觀與哲學</a></li>
+            <li class="nav-item"><a href="#metrics">2. 程式碼量與模組分佈</a></li>
+        </ul>
+
+        <div class="nav-group-title">系統架構</div>
+        <ul class="nav-list">
+            <li class="nav-item"><a href="#hierarchy">3. 核心分層架構圖</a></li>
+            <li class="nav-item"><a href="#boundary">4. 邊界與單向依賴哲學</a></li>
+            <li class="nav-item"><a href="#boot-flow">5. 啟動與韌體交接</a></li>
+        </ul>
+
+        <div class="nav-group-title">子系統與能力</div>
+        <ul class="nav-list">
+            <li class="nav-item"><a href="#arch-layer">6. CPU 架構層 (x86/ARM)</a></li>
+            <li class="nav-item"><a href="#platform-layer">7. 平台與中斷子系統</a></li>
+            <li class="nav-item"><a href="#storage-vfs">8. 儲存、快取與檔案系統</a></li>
+            <li class="nav-item"><a href="#device-model">9. 統一裝置抽象與 devfs</a></li>
+            <li class="nav-item"><a href="#user-syscall">10. 使用者空間、Libc 與 Shell</a></li>
+            <li class="nav-item"><a href="#installer-tools">11. USB 開機與測試架構</a></li>
+        </ul>
+
+        <div class="nav-group-title">總結與矩陣</div>
+        <ul class="nav-list">
+            <li class="nav-item"><a href="#capability-matrix">12. 平台能力支援度矩陣</a></li>
+            <li class="nav-item"><a href="#conclusion">13. 總結與演進藍圖</a></li>
+        </ul>
+    </aside>
+
+    <!-- 主要內容區 -->
+    <main class="content">
+
+        <!-- Header -->
+        <header class="header">
+            <div class="badge-header">
+                <span>●</span> ShirleyOS Technical Architecture Report
+            </div>
+            <h1 class="title">ShirleyOS 專案目前架構與系統能力分析報告</h1>
+            <p class="subtitle">
+                深入探討 ShirleyOS 的「CPU 架構與硬體平台嚴格分離」設計哲學、核心子系統架構、統一裝置與 VFS 抽象、檔案系統支援（exFAT / ext4 / SHRFS1）、UEFI 開機引導與整體系統能力。
+            </p>
+        </header>
+
+        <!-- 關鍵指標卡片 -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-label">核心設計語言</div>
+                <div class="stat-value" style="color: var(--accent-primary);">C++20</div>
+                <div class="stat-desc">Freestanding 核心，無外部執行期依賴</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">支援 CPU 架構</div>
+                <div class="stat-value" style="color: var(--accent-secondary);">2 + 1</div>
+                <div class="stat-desc">x86_64、ARM64（規劃 RISC-V64）</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">支援硬體平台</div>
+                <div class="stat-value" style="color: var(--accent-emerald);">5 種組合</div>
+                <div class="stat-desc">PC BIOS, PC UEFI, ARM64 Virt, ARM64 UEFI, Apple Silicon</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">檔案系統能力</div>
+                <div class="stat-value" style="color: var(--accent-amber);">3 套支援</div>
+                <div class="stat-desc">SHRFS1 (唯讀), exFAT (讀寫), ext2/3/4 (唯讀)</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">系統呼叫數量</div>
+                <div class="stat-value" style="color: var(--accent-rose);">17 個 ABI</div>
+                <div class="stat-desc">涵蓋 I/O、Process、VFS、Mount 與區塊存取</div>
+            </div>
+        </div>
+
+        <!-- Section 1: 專案概觀與哲學 -->
+        <section id="overview">
+            <h2 class="section-title"><span class="section-number">01</span> 專案概觀與設計哲學</h2>
+            <p>
+                <strong>ShirleyOS</strong> 不是教學或玩具性質的研究型微核心，而是一套為了<strong>部署在實體機器與虛擬化環境、具備高維護性與高效能</strong>而設計的作業系統。
+            </p>
+            <p>
+                專案最根本的核心原則是<strong>「CPU 指令集架構 (ISA)」與「硬體機器平台 (Platform)」的嚴格分離</strong>。傳統作業系統常將架構與平台代碼混雜在同一個目錄（例如將 PC 特有的 PIC/PIT 視為 x86 的一部分，或將 GIC 視為 ARM64 的一部分），ShirleyOS 則在目錄邊界與編譯期徹底切斷此依賴。
+            </p>
+
+            <div class="callout">
+                <div class="callout-title">
+                    <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                    核心邊界黃金準則
+                </div>
+                <p>
+                    <strong>Apple Silicon 是一個 ARM64 平台，不是一種 CPU 架構。</strong><br>
+                    在 ShirleyOS 中，Apple Silicon 嚴格表示為 <code>arch/arm64</code> + <code>platform/apple_silicon</code>；目錄結構中嚴格禁止出現 <code>arch/apple_silicon</code>。
+                </p>
+            </div>
+        </section>
+
+        <!-- Section 2: 程式碼量與模組分佈 -->
+        <section id="metrics">
+            <h2 class="section-title"><span class="section-number">02</span> 程式碼規模與模組分佈</h2>
+            <p>
+                ShirleyOS 採用模組化組織，核心通用服務佔比最高，其次為完整的單元測試與冒煙測試套件，確保核心在 Host 端與模擬目標上的高可靠度。
+            </p>
+
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>目錄模組</th>
+                            <th>主要職責</th>
+                            <th>代碼行數 (約)</th>
+                            <th>主要語言</th>
+                            <th>架構邊界規定</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>kernel/</code></td>
+                            <td>架構中立核心服務（記憶體、VFS、Console、排程、Syscall、Shell）</td>
+                            <td>7,428</td>
+                            <td>C++20</td>
+                            <td>不可包含任何特定架構或平台暫存器操作</td>
+                        </tr>
+                        <tr>
+                            <td><code>tests/</code></td>
+                            <td>Host Smoke Tests 與自動化驗證測試套件</td>
+                            <td>3,778</td>
+                            <td>C++20</td>
+                            <td>在主機端模擬 RAM Disk, Cache, FS，無需 QEMU 即可單元測試</td>
+                        </tr>
+                        <tr>
+                            <td><code>include/</code></td>
+                            <td>跨層公開 ABI 與 API Contract</td>
+                            <td>3,710</td>
+                            <td>C++ Header</td>
+                            <td><code>include/shirley/</code> 為系統唯一的對外契約</td>
+                        </tr>
+                        <tr>
+                            <td><code>platform/</code></td>
+                            <td>機器、韌體、PCI/MMIO、晶片組與中斷控制器驅動</td>
+                            <td>3,207</td>
+                            <td>C++20</td>
+                            <td>隱藏於 <code>shirley::platform</code> 介面後</td>
+                        </tr>
+                        <tr>
+                            <td><code>arch/</code></td>
+                            <td>CPU ISA、特權模式、分頁表實作、ISR 向量與上下文切換</td>
+                            <td>2,021</td>
+                            <td>Assembly, C++</td>
+                            <td>不存取任何硬體 I/O Port 或外部裝置</td>
+                        </tr>
+                        <tr>
+                            <td><code>tools/</code></td>
+                            <td>USB 安裝程式建立、exFAT/ext4 測試映像生成工具</td>
+                            <td>1,800</td>
+                            <td>Bash, Python</td>
+                            <td>主機端工具鏈</td>
+                        </tr>
+                        <tr>
+                            <td><code>boot/</code></td>
+                            <td>UEFI PE32+ 應用程式與共用 ELF 載入器</td>
+                            <td>973</td>
+                            <td>C++20, C</td>
+                            <td>產出標準 <code>BootInfo</code>，退出 Boot Services</td>
+                        </tr>
+                        <tr>
+                            <td><code>scripts/</code></td>
+                            <td>CMake 建置封裝、QEMU 啟動、ISO 封裝與除錯腳本</td>
+                            <td>953</td>
+                            <td>Bash</td>
+                            <td>提供如 <code>./shirley run x86_64</code> 的一致操作介面</td>
+                        </tr>
+                        <tr>
+                            <td><code>drivers/</code></td>
+                            <td>跨平台重用驅動邏輯 (VirtIO-Block, RAM Disk, Scancode)</td>
+                            <td>448</td>
+                            <td>C++20</td>
+                            <td>透過統一裝置介面註冊，不直接碰平台特定匯流排</td>
+                        </tr>
+                        <tr>
+                            <td><code>libc/</code> & <code>user/</code></td>
+                            <td>自製最小 C 函式庫與 Userland 程式 (Init, Hello)</td>
+                            <td>362</td>
+                            <td>C, Assembly</td>
+                            <td>透過 <code>int 0x80</code> / <code>svc #0</code> 系統呼叫進核心</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Section 3: 核心分層架構圖 -->
+        <section id="hierarchy">
+            <h2 class="section-title"><span class="section-number">03</span> 系統總體分層架構圖</h2>
+            <p>
+                下圖展示 ShirleyOS 從韌體啟動到使用者空間應用的完整垂直堆疊。每個層級皆有明確的 Contract，上下層之間透過抽象介面溝通。
+            </p>
+
+            <div class="diagram-container">
+                <svg class="diagram-svg" viewBox="0 0 960 520" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <!-- Layer 5: User Space -->
+                    <rect x="40" y="30" width="880" height="70" rx="8" fill="#1e293b" stroke="#818cf8" stroke-width="2"/>
+                    <text x="60" y="60" fill="#818cf8" font-size="14" font-weight="700">USER SPACE LAYER (Ring 3 / EL0)</text>
+                    <rect x="250" y="45" width="160" height="40" rx="6" fill="#312e81"/>
+                    <text x="330" y="70" fill="#c7d2fe" font-size="13" text-anchor="middle">PID 1: /bin/init (Shell)</text>
+                    <rect x="430" y="45" width="130" height="40" rx="6" fill="#312e81"/>
+                    <text x="495" y="70" fill="#c7d2fe" font-size="13" text-anchor="middle">/bin/hello</text>
+                    <rect x="580" y="45" width="180" height="40" rx="6" fill="#3730a3"/>
+                    <text x="670" y="70" fill="#e0e7ff" font-size="13" text-anchor="middle">libc (Syscall Trampolines)</text>
+
+                    <!-- Syscall Boundary -->
+                    <line x1="40" y1="120" x2="920" y2="120" stroke="#f43f5e" stroke-width="2" stroke-dasharray="6 6"/>
+                    <text x="480" y="115" fill="#f43f5e" font-size="12" text-anchor="middle" font-weight="600">SYSCALL BOUNDARY: int 0x80 (x86_64) / svc #0 (ARM64)</text>
+
+                    <!-- Layer 4: Generic Kernel Services -->
+                    <rect x="40" y="140" width="880" height="110" rx="8" fill="#1e293b" stroke="#38bdf8" stroke-width="2"/>
+                    <text x="60" y="165" fill="#38bdf8" font-size="14" font-weight="700">GENERIC KERNEL LAYER (kernel/)</text>
+                    
+                    <rect x="60" y="180" width="150" height="50" rx="6" fill="#0369a1"/>
+                    <text x="135" y="202" fill="#ffffff" font-size="12" text-anchor="middle" font-weight="600">VFS & devfs</text>
+                    <text x="135" y="218" fill="#bae6fd" font-size="10" text-anchor="middle">SHRFS1 / exFAT / ext4</text>
+
+                    <rect x="230" y="180" width="150" height="50" rx="6" fill="#0369a1"/>
+                    <text x="305" y="202" fill="#ffffff" font-size="12" text-anchor="middle" font-weight="600">Device Model</text>
+                    <text x="305" y="218" fill="#bae6fd" font-size="10" text-anchor="middle">Registry / Console / Streams</text>
+
+                    <rect x="400" y="180" width="150" height="50" rx="6" fill="#0369a1"/>
+                    <text x="475" y="202" fill="#ffffff" font-size="12" text-anchor="middle" font-weight="600">Memory Mgmt</text>
+                    <text x="475" y="218" fill="#bae6fd" font-size="10" text-anchor="middle">Page Allocator / Heap</text>
+
+                    <rect x="570" y="180" width="150" height="50" rx="6" fill="#0369a1"/>
+                    <text x="645" y="202" fill="#ffffff" font-size="12" text-anchor="middle" font-weight="600">Process & Scheduler</text>
+                    <text x="645" y="218" fill="#bae6fd" font-size="10" text-anchor="middle">ELF Loader / Context Switch</text>
+
+                    <rect x="740" y="180" width="160" height="50" rx="6" fill="#0369a1"/>
+                    <text x="820" y="202" fill="#ffffff" font-size="12" text-anchor="middle" font-weight="600">IRQ Dispatcher</text>
+                    <text x="820" y="218" fill="#bae6fd" font-size="10" text-anchor="middle">shirley::irq</text>
+
+                    <!-- Layer 3: Architecture & Platform (Split) -->
+                    <g transform="translate(0, 270)">
+                        <!-- Arch Box -->
+                        <rect x="40" y="0" width="420" height="110" rx="8" fill="#1e293b" stroke="#34d399" stroke-width="2"/>
+                        <text x="60" y="25" fill="#34d399" font-size="13" font-weight="700">CPU ARCHITECTURE LAYER (arch/)</text>
+                        <rect x="60" y="40" width="180" height="55" rx="6" fill="#065f46"/>
+                        <text x="150" y="62" fill="#a7f3d0" font-size="12" text-anchor="middle" font-weight="600">arch/x86_64</text>
+                        <text x="150" y="80" fill="#d1fae5" font-size="10" text-anchor="middle">GDT, TSS, IDT, 4-Level Paging</text>
+
+                        <rect x="260" y="40" width="180" height="55" rx="6" fill="#065f46"/>
+                        <text x="350" y="62" fill="#a7f3d0" font-size="12" text-anchor="middle" font-weight="600">arch/arm64</text>
+                        <text x="350" y="80" fill="#d1fae5" font-size="10" text-anchor="middle">EL1 Vectors, Stage-1 MMU</text>
+
+                        <!-- Platform Box -->
+                        <rect x="500" y="0" width="420" height="110" rx="8" fill="#1e293b" stroke="#fbbf24" stroke-width="2"/>
+                        <text x="520" y="25" fill="#fbbf24" font-size="13" font-weight="700">HARDWARE PLATFORM LAYER (platform/)</text>
+                        <rect x="520" y="40" width="120" height="55" rx="6" fill="#78350f"/>
+                        <text x="580" y="62" fill="#fde68a" font-size="11" text-anchor="middle" font-weight="600">PC Compatible</text>
+                        <text x="580" y="80" fill="#fef3c7" font-size="9" text-anchor="middle">8259A, PIT, PS/2, PCI</text>
+
+                        <rect x="655" y="40" width="120" height="55" rx="6" fill="#78350f"/>
+                        <text x="715" y="62" fill="#fde68a" font-size="11" text-anchor="middle" font-weight="600">ARM Generic</text>
+                        <text x="715" y="80" fill="#fef3c7" font-size="9" text-anchor="middle">GICv2, PPI 30 Timer</text>
+
+                        <rect x="790" y="40" width="115" height="55" rx="6" fill="#78350f"/>
+                        <text x="847" y="62" fill="#fde68a" font-size="11" text-anchor="middle" font-weight="600">Apple Silicon</text>
+                        <text x="847" y="80" fill="#fef3c7" font-size="9" text-anchor="middle">AIC, UART, BootArgs</text>
+                    </g>
+
+                    <!-- Layer 1 & 2: Bootloader & Firmware Handoff -->
+                    <rect x="40" y="400" width="880" height="90" rx="8" fill="#1e293b" stroke="#94a3b8" stroke-width="2"/>
+                    <text x="60" y="425" fill="#94a3b8" font-size="13" font-weight="700">BOOT & FIRMWARE NORMALIZATION LAYER (boot/ + platform/firmware/)</text>
+                    <rect x="60" y="440" width="260" height="38" rx="6" fill="#334155"/>
+                    <text x="190" y="464" fill="#f1f5f9" font-size="11" text-anchor="middle">UEFI Application (PE32+ OVMF / AAVMF)</text>
+
+                    <rect x="340" y="440" width="220" height="38" rx="6" fill="#334155"/>
+                    <text x="450" y="464" fill="#f1f5f9" font-size="11" text-anchor="middle">BIOS Boot Sector (Real -> Long Mode)</text>
+
+                    <rect x="580" y="440" width="320" height="38" rx="6" fill="#475569"/>
+                    <text x="740" y="464" fill="#f8fafc" font-size="11" text-anchor="middle" font-weight="600">BootInfo: E820 / FDT / UEFI / BootArgs → Page Allocator</text>
+                </svg>
+            </div>
+        </section>
+
+        <!-- Section 4: 邊界與單向依賴哲學 -->
+        <section id="boundary">
+            <h2 class="section-title"><span class="section-number">04</span> 嚴格邊界與單向依賴哲學</h2>
+            <p>
+                ShirleyOS 最大的架構優勢在於將模組邊界的「不平等式」貫徹到底：
+            </p>
+            <pre><code>arch ≠ drivers ≠ device ≠ console ≠ fs</code></pre>
+            <p>
+                這些不平等式是<strong>嚴格單向流動</strong>的。系統禁止任何反向或跳級呼叫：
+            </p>
+
+            <div class="card-grid">
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title">硬體存取單向鏈</span>
+                        <span class="badge badge-success">合法路徑</span>
+                    </div>
+                    <p style="font-size: 0.85rem;">
+                        <code>Hardware → Driver → device::Device → Registry → Console → VFS / Shell</code>
+                    </p>
+                    <p style="font-size: 0.85rem; color: var(--text-muted);">
+                        驅動程式負責將中斷接收到的字元推入環狀緩衝區，並包裝為具名裝置註冊到 <code>shirley::device</code>。
+                    </p>
+                </div>
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title">嚴格禁止的反模式</span>
+                        <span class="badge badge-danger">編譯/架構阻止</span>
+                    </div>
+                    <ul style="font-size: 0.85rem; color: var(--text-secondary); padding-left: 1.2rem;">
+                        <li><strong>Keyboard IRQ → Shell</strong>（禁止鍵盤中斷直接呼叫 shell）</li>
+                        <li><strong>VFS → inb/outb</strong>（禁止檔案系統存取硬體 I/O Port）</li>
+                        <li><strong>Device Manager → 0x60</strong>（裝置管理員不知道特定硬體暫存器位址）</li>
+                        <li><strong>Console → 8259A</strong>（主控台不知道任何 PIC 中斷細節）</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="callout">
+                <div class="callout-title">
+                    <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                    唯一命名空間：路徑 (Path)
+                </div>
+                <p>
+                    在核心中，<strong>路徑是唯一的物件名稱</strong>。<code>/dev</code> 只是裝置註冊表之上的一個 VFS 節點映射（devfs），而不是另一套驅動程式。因此，<code>cat /etc/motd</code> 與 <code>cat /dev/kbd0</code> 在核心中走完全相同的 VFS 系統呼叫路徑。
+                </p>
+            </div>
+        </section>
+
+        <!-- Section 5: 啟動與韌體交接 -->
+        <section id="boot-flow">
+            <h2 class="section-title"><span class="section-number">05</span> 啟動流程與韌體交接標準化</h2>
+            <p>
+                ShirleyOS 支援從不同韌體環境冷開機，並透過韌體配接層將異構資訊轉換為統一的 <code>shirley::BootInfo</code> 契約：
+            </p>
+
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>啟動路徑</th>
+                            <th>韌體環境</th>
+                            <th>進入點與流程</th>
+                            <th>記憶體資訊來源</th>
+                            <th>交接結果</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>UEFI Direct Boot</strong></td>
+                            <td>OVMF (x86_64) / AAVMF (ARM64)</td>
+                            <td><code>boot/uefi/main.cpp</code> (PE32+ EFI 應用)<br>載入 Kernel ELF 檔，退出 EFI Boot Services</td>
+                            <td>UEFI Memory Map (EfiConventionalMemory)</td>
+                            <td>產生 <code>BootHandoff</code> 結構，直接跳至核心入口</td>
+                        </tr>
+                        <tr>
+                            <td><strong>BIOS Direct Boot</strong></td>
+                            <td>SeaBIOS (PC)</td>
+                            <td><code>arch/x86_64/boot.S</code><br>16-bit 實模式取得 E820 → 切入保護模式 → 建立 1GiB Identity Paging → 切入 Long Mode</td>
+                            <td>BIOS INT 15h, AX=E820h</td>
+                            <td>轉換為 <code>BootInfo</code>，設定開機堆疊並清空 <code>.bss</code></td>
+                        </tr>
+                        <tr>
+                            <td><strong>QEMU Direct Kernel</strong></td>
+                            <td>QEMU <code>-kernel</code> (ARM64)</td>
+                            <td><code>arch/arm64/entry.S</code><br>清空 <code>.bss</code>，直接從暫存器 x0 接收 FDT 位址</td>
+                            <td>Flattened Device Tree (FDT) <code>/memory</code> 節點</td>
+                            <td><code>platform/firmware/fdt.cpp</code> 解析保留區與可用記憶體</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <h3 class="subsection-title">kernel_main() 啟動循序時序</h3>
+            <pre><code>1. shirley::arch::initialize()       // 安裝 CPU 例外向量 (IDT / EL1 Vector)
+2. shirley::device::initialize()     // 清空裝置註冊表
+3. shirley::console::initialize()    // 登記主控台裝置與標準 I/O 流
+4. shirley::irq::initialize()        // 重置 IRQ 派送表
+5. shirley::platform::initialize()   // 啟動晶片組、中斷控制器 (PIC/GIC) 與計時器 (100Hz)
+6. shirley::memory::initialize()     // 由 BootInfo 記憶體地圖初始化頁面配置器 (Page Allocator)
+7. shirley::heap::initialize()       // 初始化 1 MiB .bss 核心堆積 (kmalloc/kfree)
+8. shirley::scheduler::initialize()  // 初始化行程排程器
+9. shirley::platform::initialize_storage() // 探測並帶起磁碟裝置 (VirtIO-PCI / VirtIO-MMIO)
+10. shirley::arch::enable_interrupts()     // 安全開啟全域中斷 (sti / cpsie)
+11. shirley::vfs::initialize()       // 掛載 SHRFS1 根目錄 '/' 與 devfs '/dev'
+12. shirley::user::launch("/bin/init")     // 啟動 PID 1 使用者空間 Shell (若失敗則進入核心救援 shell)</code></pre>
+        </section>
+
+        <!-- Section 6: CPU 架構層 -->
+        <section id="arch-layer">
+            <h2 class="section-title"><span class="section-number">06</span> CPU 架構層實作 (arch/)</h2>
+            <p>
+                <code>arch/</code> 封裝了純粹的 CPU 指令集架構、暫存器狀態與特權級別機制，對外透過 <code>include/shirley/arch.hpp</code> 提供介面。
+            </p>
+
+            <div class="card-grid">
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title">x86_64 架構實作</span>
+                        <span class="badge badge-info">x86_64</span>
+                    </div>
+                    <ul style="font-size: 0.88rem; color: var(--text-secondary); padding-left: 1.2rem;">
+                        <li><strong>特權模型</strong>：GDT 設定 Kernel/User CS、DS 與 TSS，支援 Ring 0 與 Ring 3 切換。</li>
+                        <li><strong>中斷架構</strong>：256-entry IDT、組合語言 <code>interrupt.S</code> 處理所有 ISR 入口並保存暫存器。</li>
+                        <li><strong>虛擬記憶體</strong>：4 層分頁表（PML4 → PDPT → PD → PT），實作 <code>memory::AddressSpace</code>。</li>
+                        <li><strong>CPU 特性啟用</strong>：CPUID 偵測、WP (Write Protect)、NX (No-Execute)、SSE/SIMD。</li>
+                        <li><strong>低功耗待機</strong>：閒置迴圈使用 <code>hlt</code> 等待中斷，絕不進行空轉輪詢。</li>
+                    </ul>
+                </div>
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title">ARM64 (AArch64) 架構實作</span>
+                        <span class="badge badge-info">ARM64</span>
+                    </div>
+                    <ul style="font-size: 0.88rem; color: var(--text-secondary); padding-left: 1.2rem;">
+                        <li><strong>特權模型</strong>：EL1 核心特權與 EL0 使用者特權，透過 <code>eret</code> 切換。</li>
+                        <li><strong>例外架構</strong>：2 KiB 對齊的 EL1 例外向量表（<code>exception.S</code>），處理 Synchronous、IRQ、FIQ 與 SError。</li>
+                        <li><strong>虛擬記憶體</strong>：4KB Granule Stage-1 Translation Table，支援 48-bit 虛擬位址空間。</li>
+                        <li><strong>CPU 特性啟用</strong>：MIDR_EL1 解碼、啟用 CPACR_EL1 允許 EL0 存取 FP/SIMD。</li>
+                        <li><strong>低功耗待機</strong>：閒置迴圈使用 <code>wfi</code> (Wait For Interrupt)。</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <!-- Section 7: 平台與中斷子系統 -->
+        <section id="platform-layer">
+            <h2 class="section-title"><span class="section-number">07</span> 平台與中斷子系統 (platform/ & irq)</h2>
+            <p>
+                ShirleyOS 抽象出通用的 <code>shirley::irq</code> 介面，驅動程式只需註冊 IRQ 回呼函數，不需知道底層是由 8259A PIC、ARM GICv2 還是 Apple AIC 所派發。
+            </p>
+
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>平台</th>
+                            <th>中斷控制器</th>
+                            <th>系統計時器</th>
+                            <th>標準主控台與輸入</th>
+                            <th>虛擬化 I/O 匯流排</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>PC (x86_64)</strong></td>
+                            <td>雙片 8259A PIC (重映射 IRQ 0x20/0x28)</td>
+                            <td>8254 PIT (IRQ0, 100 Hz 定時滴答)</td>
+                            <td>COM1 16550 UART (IRQ4)<br>PS/2 鍵盤 (IRQ1，含掃描碼解碼)</td>
+                            <td>PCI 匯流排探測 + VirtIO-PCI</td>
+                        </tr>
+                        <tr>
+                            <td><strong>QEMU ARM (virt)</strong></td>
+                            <td>ARM GICv2 (Distributor + CPU Interface)</td>
+                            <td>ARM Generic Timer (PPI 30, 100 Hz)</td>
+                            <td>PL011 UART (中斷接收驅動，無輪詢)</td>
+                            <td>FDT 掃描 + VirtIO-MMIO</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Apple Silicon</strong></td>
+                            <td>Apple Interrupt Controller (AIC)</td>
+                            <td>ARM Generic Timer</td>
+                            <td>Apple Silicon 專用 UART 暫存器</td>
+                            <td>專屬平台路徑（已完成建置與程式碼架構檢視）</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Section 8: 儲存、快取與檔案系統 -->
+        <section id="storage-vfs">
+            <h2 class="section-title"><span class="section-number">08</span> 儲存架構、區塊快取與檔案系統實作</h2>
+            <p>
+                ShirleyOS 的檔案系統架構經歷了重大的現代化躍升，從原本僅有的唯讀 RAM Disk 擴展為具備<strong>區塊快取、分割表解析、exFAT 讀寫、ext2/3/4 唯讀</strong>的現代化儲存堆疊。
+            </p>
+
+            <div class="card-grid">
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title">1. SHRFS1 (唯讀根檔案系統)</span>
+                        <span class="badge badge-success">開機必備</span>
+                    </div>
+                    <p style="font-size: 0.88rem; color: var(--text-secondary);">
+                        在 CMake 建置時，由 <code>make-rootfs.cmake</code> 將 <code>rootfs/</code> 目錄打包為位元組陣列，直接連進核心映像。開機時由 RAM Disk 掛載至 <code>/</code>，使系統在無磁碟驅動前即可讀取 <code>/etc/motd</code>、<code>/etc/version</code> 與 <code>/bin/hello</code>。
+                    </p>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title">2. exFAT 檔案系統實作</span>
+                        <span class="badge badge-success">完整讀寫 (FS-2)</span>
+                    </div>
+                    <ul style="font-size: 0.85rem; color: var(--text-secondary); padding-left: 1.2rem;">
+                        <li><strong>識別</strong>：檢查 Boot Sector <code>"EXFAT   "</code> 標記與修訂版本。</li>
+                        <li><strong>讀取</strong>：支援 Allocation Bitmap、Up-case Table（不分大小寫比對）、連續叢集旗標（<code>NoFatChain</code>）。</li>
+                        <li><strong>寫入能力</strong>：支援檔案建立、刪除、改名、目錄建立 (<code>mkdir</code>)、內容寫入與截短 (<code>truncate</code>)。</li>
+                        <li><strong>完整性維護</strong>：掛載時設定 <code>VolumeDirty</code>，卸載乾淨時清除，確保崩潰安全性。</li>
+                    </ul>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title">3. ext2 / ext3 / ext4 檔案系統</span>
+                        <span class="badge badge-success">唯讀實作 (FS-3)</span>
+                    </div>
+                    <ul style="font-size: 0.85rem; color: var(--text-secondary); padding-left: 1.2rem;">
+                        <li><strong>相容性識別</strong>：超級區塊魔數 <code>0xEF53</code>，嚴格檢查 <code>feature_incompat</code> 與 <code>feature_ro_compat</code>。</li>
+                        <li><strong>尋址支援</strong>：同時支援傳統 Indirect Block 與現代 <strong>Extent Tree</strong>。</li>
+                        <li><strong>大型磁區支援</strong>：支援 64-bit 區塊號碼、<code>meta_bg</code> (元資料區塊群組)。</li>
+                        <li><strong>目錄與校驗</strong>：線性目錄掃描、<code>htree</code> 雜湊目錄平坦化讀取、<code>metadata_csum</code> 校驗。</li>
+                        <li><strong>驗證強度</strong>：通過 Linux e2fsprogs 的 215 個測試映像壓力測試而不崩潰。</li>
+                    </ul>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title">4. 底層儲存與快取設施</span>
+                        <span class="badge badge-info">基礎設施</span>
+                    </div>
+                    <ul style="font-size: 0.85rem; color: var(--text-secondary); padding-left: 1.2rem;">
+                        <li><strong><code>io::BlockCache</code></strong>：以 <code>(device, block)</code> 為鍵的 LRU 區塊快取，支援 Write-Back 與 <code>sync()</code>。</li>
+                        <li><strong>分割表解析</strong>：支援 MBR（含延伸分割區與邏輯磁區）與 GPT（GUID 分割表）。</li>
+                        <li><strong>裝置註冊</strong>：分割區自動映射為 <code>sda1</code>, <code>sda2</code> 等區塊裝置。</li>
+                        <li><strong>長檔名與編碼</strong>：支援 255 位元組檔名、512 位元組路徑，實作 UTF-16LE ↔ UTF-8 轉換。</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <!-- Section 9: 統一裝置抽象與 devfs -->
+        <section id="device-model">
+            <h2 class="section-title"><span class="section-number">09</span> 統一裝置抽象模型與 devfs</h2>
+            <p>
+                所有硬體裝置均封裝在 <code>shirley::device::Device</code> 介面下，分為三大類別：
+            </p>
+            <div class="card-grid">
+                <div class="card">
+                    <div class="card-title" style="color: var(--accent-primary);">字元裝置 (Character Device)</div>
+                    <p style="font-size: 0.85rem; margin-top: 0.5rem;">
+                        提供序列化位元組流讀寫。代表裝置：<code>console</code>（主控台）、<code>uart0</code>（序列埠）、<code>null</code>（空裝置）。
+                    </p>
+                </div>
+                <div class="card">
+                    <div class="card-title" style="color: var(--accent-emerald);">區塊裝置 (Block Device)</div>
+                    <p style="font-size: 0.85rem; margin-top: 0.5rem;">
+                        以固定區塊（通常 512 或 4096 位元組）為單位的隨機讀寫。代表裝置：<code>ram0</code>（記憶體磁碟）、<code>vda</code>/<code>sda</code>（VirtIO 磁碟）。
+                    </p>
+                </div>
+                <div class="card">
+                    <div class="card-title" style="color: var(--accent-amber);">輸入裝置 (Input Device)</div>
+                    <p style="font-size: 0.85rem; margin-top: 0.5rem;">
+                        產生事件與字元佇列。代表裝置：<code>kbd0</code>（PS/2 鍵盤），自帶環狀佇列與掃描碼轉換。
+                    </p>
+                </div>
+            </div>
+            <p>
+                <code>devfs</code> 將裝置註冊表直接掛載在 <code>/dev</code> 目錄下。每個 VFS 節點僅持有 <code>device::Device*</code> 指標，不需維護重複的狀態。
+            </p>
+        </section>
+
+        <!-- Section 10: 使用者空間、Libc 與 Shell -->
+        <section id="user-syscall">
+            <h2 class="section-title"><span class="section-number">10</span> 使用者空間、Libc 與互動式 Shell</h2>
+            <p>
+                ShirleyOS 目前擁有成熟的 Ring 3 / EL0 使用者空間執行能力。開機完成後直接由核心載入並啟動 <code>/bin/init</code>（PID 1）。
+            </p>
+
+            <h3 class="subsection-title">原生系統呼叫 (System Call ABI)</h3>
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>編號</th>
+                            <th>Syscall 名稱</th>
+                            <th>簽名規格</th>
+                            <th>功能說明</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>1</td><td><code>Write</code></td><td><code>write(fd, buf, len)</code></td><td>寫入檔案描述子（主控台、檔案或裝置）</td></tr>
+                        <tr><td>2</td><td><code>Exit</code></td><td><code>exit(status)</code></td><td>終止當前使用者行程，不返回</td></tr>
+                        <tr><td>3</td><td><code>Read</code></td><td><code>read(fd, buf, len)</code></td><td>自檔案描述子讀取資料（支援阻塞中斷輸入）</td></tr>
+                        <tr><td>4</td><td><code>Open</code></td><td><code>open(path, flags)</code></td><td>開啟或建立檔案，支援 O_RDONLY, O_WRONLY, O_CREAT, O_TRUNC</td></tr>
+                        <tr><td>5</td><td><code>Close</code></td><td><code>close(fd)</code></td><td>關閉檔案描述子並釋放句柄</td></tr>
+                        <tr><td>6</td><td><code>Stat</code></td><td><code>stat(path, node_info)</code></td><td>取得 VFS 節點之型態、大小與所屬檔案系統</td></tr>
+                        <tr><td>7</td><td><code>List</code></td><td><code>list(path, pos, node_info)</code></td><td>遍歷目錄項目（目錄列舉）</td></tr>
+                        <tr><td>8</td><td><code>Uptime</code></td><td><code>uptime(uptime_info)</code></td><td>查詢系統計時器滴答數與計時器頻率 (Hz)</td></tr>
+                        <tr><td>9</td><td><code>Exec</code></td><td><code>exec(path)</code></td><td>載入並執行使用者空間 ELF 程式（如 <code>/bin/hello</code>）</td></tr>
+                        <tr><td>10</td><td><code>Mount</code></td><td><code>mount_info(pos, mount_info)</code></td><td>列舉目前系統所有已掛載的檔案系統點</td></tr>
+                        <tr><td>11</td><td><code>BlockRead</code></td><td><code>block_read(block_request)</code></td><td>直接從底層區塊裝置讀取特定磁區（用於診斷與 hex dump）</td></tr>
+                        <tr><td>12</td><td><code>MountDevice</code></td><td><code>mount_device(mount_request)</code></td><td>動態掛載區塊裝置（自動偵測 exFAT 或 ext2/3/4）</td></tr>
+                        <tr><td>13</td><td><code>Unmount</code></td><td><code>unmount(path, reason, cap)</code></td><td>卸載指定路徑之檔案系統，觸發資料刷寫</td></tr>
+                        <tr><td>14</td><td><code>MakeDirectory</code></td><td><code>mkdir(path)</code></td><td>在可寫檔案系統上建立新目錄</td></tr>
+                        <tr><td>15</td><td><code>Remove</code></td><td><code>remove(path)</code></td><td>刪除檔案或空目錄</td></tr>
+                        <tr><td>16</td><td><code>Rename</code></td><td><code>rename(from, to)</code></td><td>檔案或目錄重新命名／移動</td></tr>
+                        <tr><td>17</td><td><code>Sync</code></td><td><code>sync()</code></td><td>將所有 Dirty 區塊快取同步刷回實體儲存媒體</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <h3 class="subsection-title">PID 1 Init 內建 Shell 指令集</h3>
+            <p>
+                由 <code>user/init/main.c</code> 編譯而成的使用者空間 Shell 具備完整的終端互動、行編輯（支援 Backspace、ANSI 清除）與指令直譯能力：
+            </p>
+            <div class="card-grid">
+                <div class="card">
+                    <div class="card-title">基本系統與導覽</div>
+                    <p style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 0.4rem;">
+                        <code>help</code>, <code>cd</code>, <code>pwd</code>, <code>ls</code>, <code>cat</code>, <code>stat</code>, <code>echo</code> (支援 <code>&gt;</code> 重新導向寫檔), <code>clear</code>, <code>uptime</code>
+                    </p>
+                </div>
+                <div class="card">
+                    <div class="card-title">檔案管理與掛載</div>
+                    <p style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 0.4rem;">
+                        <code>mount &lt;dev&gt; &lt;path&gt;</code>, <code>umount &lt;path&gt;</code>, <code>mkdir</code>, <code>rm</code>, <code>mv</code>, <code>sync</code>, <code>blk &lt;dev&gt; &lt;block&gt;</code>
+                    </p>
+                </div>
+                <div class="card">
+                    <div class="card-title">程式載入與執行</div>
+                    <p style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 0.4rem;">
+                        <code>exec &lt;path&gt;</code> (載入執行 ELF 程式), <code>hello</code> (捷徑呼叫 <code>/bin/hello</code>)
+                    </p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Section 11: USB 開機與測試架構 -->
+        <section id="installer-tools">
+            <h2 class="section-title"><span class="section-number">11</span> USB 開機安裝程式與測試體系</h2>
+            
+            <h3 class="subsection-title">實體機 USB 可開機安裝程式 (tools/make-usb-installer.sh)</h3>
+            <p>
+                專案具備全自動產出實體 USB 隨身碟映像的能力，可直接寫入隨身碟並在支援 UEFI 的實體 PC 或 ARM 開發板上開機：
+            </p>
+            <ul style="font-size: 0.9rem; color: var(--text-secondary); padding-left: 1.5rem; margin-bottom: 1rem;">
+                <li><strong>標準分割佈局</strong>：GPT (GUID Partition Table) 分割表。</li>
+                <li><strong>EFI 系統分割區 (ESP)</strong>：FAT32 格式，包含 <code>/EFI/BOOT/BOOTX64.EFI</code> (x86_64) 或 <code>/EFI/BOOT/BOOTAA64.EFI</code> (ARM64)。</li>
+                <li><strong>系統核心與根目錄</strong>：包含 <code>/shirleyos.elf</code> 核心映像與說明文件。</li>
+                <li><strong>跨平台產出</strong>：支援在 Linux 與 macOS 上使用 <code>dd</code> 寫入實體隨身碟，並可在 QEMU 中透過 <code>tools/test-usb-installer.sh</code> 驗證。</li>
+            </ul>
+
+            <h3 class="subsection-title">全自動 Host Smoke Tests 測試體系</h3>
+            <p>
+                為避免繁瑣的虛擬機啟動循環，ShirleyOS 設計了高覆蓋率的 Host-side 冒煙測試（<code>tests/</code>）：
+            </p>
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>測試項目</th>
+                            <th>測試程式</th>
+                            <th>驗證範疇</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><strong>區塊快取測試</strong></td><td><code>block_cache_smoke.cpp</code></td><td>驗證 LRU 淘汰、Dirty 區塊標記、Flush 與 Write-Back 正確性</td></tr>
+                        <tr><td><strong>exFAT 讀寫測試</strong></td><td><code>exfat_smoke.cpp</code><br><code>exfat_write_smoke.cpp</code></td><td>驗證 Boot Sector 檢核、FAT 叢集鏈追蹤、目錄項目新增/刪除/改名</td></tr>
+                        <tr><td><strong>ext4 唯讀測試</strong></td><td><code>ext4_smoke.cpp</code></td><td>Extents 遍歷、間接區塊映射、64-bit 支援、e2fsprogs 測試映像壓力測試</td></tr>
+                        <tr><td><strong>分割表解析測試</strong></td><td><code>partition_smoke.cpp</code></td><td>MBR 主分割區、延伸分割區、GPT 標頭與分割區項目解析</td></tr>
+                        <tr><td><strong>VFS 核心測試</strong></td><td><code>vfs_smoke.cpp</code></td><td>路徑正規化、多層掛載點切換、權限與錯誤碼傳遞</td></tr>
+                        <tr><td><strong>VirtIO 驅動測試</strong></td><td><code>virtio_smoke.cpp</code></td><td>VirtIO 佇列描述符、讀寫請求封裝與狀態交接</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Section 12: 支援度矩陣 -->
+        <section id="capability-matrix">
+            <h2 class="section-title"><span class="section-number">12</span> 平台能力支援度矩陣</h2>
+            <p>
+                彙整 ShirleyOS 目前在各目標平台與組合上的成熟度與支援現況：
+            </p>
+
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>功能模組 / 子系統</th>
+                            <th>QEMU x86_64 (BIOS)</th>
+                            <th>QEMU x86_64 (UEFI)</th>
+                            <th>QEMU ARM64 (virt)</th>
+                            <th>QEMU ARM64 (UEFI)</th>
+                            <th>Apple Silicon (ARM64)</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>CPU 特權初始化</strong></td>
+                            <td><span class="badge badge-success">完成 (GDT/IDT)</span></td>
+                            <td><span class="badge badge-success">完成 (GDT/IDT)</span></td>
+                            <td><span class="badge badge-success">完成 (EL1)</span></td>
+                            <td><span class="badge badge-success">完成 (EL1)</span></td>
+                            <td><span class="badge badge-success">完成 (EL1)</span></td>
+                        </tr>
+                        <tr>
+                            <td><strong>記憶體分頁表</strong></td>
+                            <td><span class="badge badge-success">完成 (4-Level)</span></td>
+                            <td><span class="badge badge-success">完成 (4-Level)</span></td>
+                            <td><span class="badge badge-success">完成 (Stage-1)</span></td>
+                            <td><span class="badge badge-success">完成 (Stage-1)</span></td>
+                            <td><span class="badge badge-success">完成 (Stage-1)</span></td>
+                        </tr>
+                        <tr>
+                            <td><strong>中斷與定時器</strong></td>
+                            <td><span class="badge badge-success">完成 (PIC/PIT)</span></td>
+                            <td><span class="badge badge-success">完成 (PIC/PIT)</span></td>
+                            <td><span class="badge badge-success">完成 (GICv2/Timer)</span></td>
+                            <td><span class="badge badge-success">完成 (GICv2/Timer)</span></td>
+                            <td><span class="badge badge-warning">架構完成 (AIC)</span></td>
+                        </tr>
+                        <tr>
+                            <td><strong>主控台與鍵盤輸入</strong></td>
+                            <td><span class="badge badge-success">完成 (PS/2 + COM1)</span></td>
+                            <td><span class="badge badge-success">完成 (PS/2 + COM1)</span></td>
+                            <td><span class="badge badge-success">完成 (PL011 UART)</span></td>
+                            <td><span class="badge badge-success">完成 (PL011 UART)</span></td>
+                            <td><span class="badge badge-warning">暫存器架構就緒</span></td>
+                        </tr>
+                        <tr>
+                            <td><strong>VirtIO 磁碟存取</strong></td>
+                            <td><span class="badge badge-success">完成 (PCI)</span></td>
+                            <td><span class="badge badge-success">完成 (PCI)</span></td>
+                            <td><span class="badge badge-success">完成 (MMIO)</span></td>
+                            <td><span class="badge badge-success">完成 (MMIO)</span></td>
+                            <td><span class="badge badge-danger">無 QEMU 模擬器</span></td>
+                        </tr>
+                        <tr>
+                            <td><strong>exFAT / ext4 掛載</strong></td>
+                            <td><span class="badge badge-success">支援 (全域可用)</span></td>
+                            <td><span class="badge badge-success">支援 (全域可用)</span></td>
+                            <td><span class="badge badge-success">支援 (全域可用)</span></td>
+                            <td><span class="badge badge-success">支援 (全域可用)</span></td>
+                            <td><span class="badge badge-success">支援 (通用邏輯)</span></td>
+                        </tr>
+                        <tr>
+                            <td><strong>Userland (Ring3/EL0)</strong></td>
+                            <td><span class="badge badge-success">支援 (/bin/init)</span></td>
+                            <td><span class="badge badge-success">支援 (/bin/init)</span></td>
+                            <td><span class="badge badge-success">支援 (/bin/init)</span></td>
+                            <td><span class="badge badge-success">支援 (/bin/init)</span></td>
+                            <td><span class="badge badge-warning">待實體硬體測試</span></td>
+                        </tr>
+                        <tr>
+                            <td><strong>實機 USB 開機映像</strong></td>
+                            <td><span class="badge badge-success">支援 (UEFI/GPT)</span></td>
+                            <td><span class="badge badge-success">支援 (UEFI/GPT)</span></td>
+                            <td><span class="badge badge-success">支援 (UEFI/GPT)</span></td>
+                            <td><span class="badge badge-success">支援 (UEFI/GPT)</span></td>
+                            <td><span class="badge badge-warning">待 m1n1 鏈接</span></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Section 13: 總結與演進藍圖 -->
+        <section id="conclusion">
+            <h2 class="section-title"><span class="section-number">13</span> 總結與未來演進路線圖</h2>
+            <p>
+                ShirleyOS 目前已經達到極為穩固的<strong>「可操作、可除錯、具備現代化儲存與使用者空間」的里程碑狀態</strong>：
+            </p>
+            <ul style="font-size: 0.95rem; color: var(--text-secondary); padding-left: 1.5rem; margin-bottom: 1.5rem;">
+                <li>系統具備<strong>嚴格清晰的層級邊界</strong>，在同一個通用核心邏輯下無縫驅動 x86_64 與 ARM64 兩種架構。</li>
+                <li>具備<strong>現代儲存堆疊</strong>：不再侷限於 RAM Disk，已可透由 VirtIO 磁碟掛載真實磁碟映像、解析 GPT/MBR 分割表，並支援 exFAT 讀寫與 ext4 唯讀。</li>
+                <li>具備<strong>標準化 UEFI 開機載入器</strong>與完整的 USB 安裝程式產出工具鏈，已具備推向實體 PC 開機的能力。</li>
+                <li>擁有<strong>獨立的使用者空間世界</strong>：開機直達 PID 1 <code>/bin/init</code> 使用者空間 Shell，使用者與核心透過清晰的 17 個 Syscall ABI 進行互動。</li>
+            </ul>
+
+            <h3 class="subsection-title">未來演進優先級建議 (Next Steps)</h3>
+            <div class="card-grid">
+                <div class="card">
+                    <div class="card-title" style="color: var(--accent-primary);">1. 多工排程與行程管理</div>
+                    <p style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 0.5rem;">
+                        將目前的單一前台行程延伸為具備搶佔式定時器滴答排程（Preemptive Scheduler）、<code>fork()</code> / <code>waitpid()</code> 支援與行程狀態機。
+                    </p>
+                </div>
+                <div class="card">
+                    <div class="card-title" style="color: var(--accent-emerald);">2. 實體機原生儲存控制器</div>
+                    <p style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 0.5rem;">
+                        在 VirtIO 之外，引入 PCI AHCI (SATA) 或 NVMe 驅動程式，讓實體電腦從 USB 開機後能直接讀寫本機固態硬碟。
+                    </p>
+                </div>
+                <div class="card">
+                    <div class="card-title" style="color: var(--accent-amber);">3. SMP (多核心處理器) 支援</div>
+                    <p style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 0.5rem;">
+                        解析 ACPI MADT (x86_64) 或 FDT CPU 節點 (ARM64)，透過 IPI (Inter-Processor Interrupt) 喚醒 Application Processors (AP)。
+                    </p>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+</body>
+</html>

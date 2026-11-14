@@ -1,0 +1,16 @@
+[package]
+name = "shirley-rust"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "shirley_rust"
+crate-type = ["staticlib"]
+
+[profile.release]
+opt-level = 2
+panic = "abort"
+lto = true
+codegen-units = 1
+
+[dependencies]
