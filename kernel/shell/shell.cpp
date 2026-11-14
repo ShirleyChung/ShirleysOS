@@ -939,8 +939,16 @@ void execute() {
     if (text::equals(command, "version")) return command_version();
     if (text::equals(command, "clear")) return command_clear();
     if (text::equals(command, "hello")) return command_hello();
-    if (text::equals(command, "reboot")) platform::restart();
-    if (text::equals(command, "poweroff")) platform::power_off();
+    if (text::equals(command, "reboot")) {
+        console::write("[kernel] Flushing caches and rebooting...\n");
+        vfs::sync();
+        platform::restart();
+    }
+    if (text::equals(command, "poweroff")) {
+        console::write("[kernel] Flushing caches and powering off...\n");
+        vfs::sync();
+        platform::power_off();
+    }
     write(command);
     write_line(": unknown command (try help)");
 }

@@ -81,6 +81,9 @@ static void init_aliases(void) {
     copy(aliases[1].name, sizeof(aliases[1].name), "ll");
     copy(aliases[1].value, sizeof(aliases[1].value), "ls");
     aliases[1].active = 1;
+    copy(aliases[2].name, sizeof(aliases[2].name), "restart");
+    copy(aliases[2].value, sizeof(aliases[2].value), "reboot");
+    aliases[2].active = 1;
 }
 
 static void set_alias(const char* name, const char* value) {
@@ -146,6 +149,8 @@ static const char* description_top(void){return "monitor real-time system resour
 static const char* description_blk(void){return "read and dump one block from a kernel block device";}
 static const char* description_exec(void){return "load and run a user-space ELF program by path";}
 static const char* description_hello(void){return "run the user-space executable /bin/hello";}
+static const char* description_reboot(void){return "flush filesystem caches, terminate processes, and reboot the system";}
+static const char* description_poweroff(void){return "flush filesystem caches, terminate processes, and power off the machine";}
 static void ls(void){ char path[PATH_MAX]; struct node_info n; resolve(argc>1?argv[1]:".",path); if(shirley_syscall(6,path,&n)<0){putln("ls: not found");return;} if(n.type!=1){putln(n.name);return;} for(uint64_t i=0;shirley_syscall(7,path,i,&n)==0;++i){puts2("  ");puts2(n.name);if(n.type==1)puts2("/");puts2("\n");} }
 static void cat_file(void){ if(argc<2){putln("cat: needs a file to print");return;} char path[PATH_MAX],b[256];resolve(argv[1],path);int fd=open(path,O_RDONLY);if(fd<0){putln("cat: open failed");return;}ssize_t n;while((n=read(fd,b,sizeof(b)))>0)write(1,b,(size_t)n);close(fd); }
 static void cd_cmd(void){ char path[PATH_MAX];struct node_info n;resolve(argc>1?argv[1]:"/",path);if(shirley_syscall(6,path,&n)<0){putln("cd: not found");return;}if(n.type!=1){putln("cd: not a directory");return;}copy(cwd,sizeof(cwd),n.path); }
@@ -392,11 +397,34 @@ static void pwd_cmd(void){putln(cwd);}
 static void clear_cmd(void){puts2("\033[2J\033[H");}
 static void hello_cmd(void){exec_cmd("/bin/hello");}
 static void exec_command(void){if(argc<2){putln("exec: needs a program path");return;}exec_cmd(argv[1]);}
+static void reboot_cmd(void){
+    putln("\nBroadcast message from root@shirley (console):");
+    putln("The system is going down for reboot NOW!");
+    puts2("Terminating user processes... ");
+    putln("[OK]");
+    puts2("Syncing disks and flushing caches... ");
+    shirley_syscall(17);
+    putln("[OK]");
+    puts2("Restarting system hardware...\n");
+    shirley_syscall(20);
+}
+static void poweroff_cmd(void){
+    putln("\nBroadcast message from root@shirley (console):");
+    putln("The system is going down for poweroff NOW!");
+    puts2("Terminating user processes... ");
+    putln("[OK]");
+    puts2("Syncing disks and flushing caches... ");
+    shirley_syscall(17);
+    putln("[OK]");
+    puts2("Powering off machine...\n");
+    shirley_syscall(21);
+}
 
 static const struct command shell_commands[]={
     {"help",help,description_help},{"cd",cd_cmd,description_cd},{"pwd",pwd_cmd,description_pwd},
     {"echo",echo_cmd,description_echo},{"clear",clear_cmd,description_clear},
-    {"alias",alias_cmd,description_alias},{"unalias",unalias_cmd,description_unalias}
+    {"alias",alias_cmd,description_alias},{"unalias",unalias_cmd,description_unalias},
+    {"reboot",reboot_cmd,description_reboot},{"poweroff",poweroff_cmd,description_poweroff}
 };
 static const struct command kernel_commands[]={
     {"ls",ls,description_ls},{"cat",cat_file,description_cat},{"stat",stat_cmd,description_stat},

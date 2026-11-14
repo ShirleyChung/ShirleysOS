@@ -1,6 +1,7 @@
 #include "shirley/syscall.hpp"
 
 #include "shirley/arch.hpp"
+#include "shirley/console.hpp"
 #include "shirley/device_mount.hpp"
 #include "shirley/heap.hpp"
 #include "shirley/memory.hpp"
@@ -237,6 +238,26 @@ void dispatch(Context& context) {
         context.result = -1;
         return;
     }
+    case Number::Reboot:
+        console::write("\n[system] Reboot requested from user space\n");
+        console::write("[system] Terminating active processes and tasks...\n");
+        process::teardown();
+        console::write("[system] Flushing filesystem caches to disks (sync)...\n");
+        vfs::sync();
+        console::write("[system] Releasing hardware devices and drivers...\n");
+        console::write("[system] Restarting ShirleyOS...\n\n");
+        platform::restart();
+        return;
+    case Number::PowerOff:
+        console::write("\n[system] Shutdown requested from user space\n");
+        console::write("[system] Terminating active processes and tasks...\n");
+        process::teardown();
+        console::write("[system] Flushing filesystem caches to disks (sync)...\n");
+        vfs::sync();
+        console::write("[system] Releasing hardware devices and drivers...\n");
+        console::write("[system] Powering off ShirleyOS...\n");
+        platform::power_off();
+        return;
     default:
         context.result = -1;
         return;

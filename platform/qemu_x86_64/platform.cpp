@@ -102,6 +102,8 @@ unsigned timer_frequency() { return pc::pit_frequency(); }
 
 [[noreturn]] void restart() {
     outb(keyboard_command, keyboard_reset);
+    outb(0xcf9, 0x02);
+    outb(0xcf9, 0x06);
     arch::halt();
 }
 

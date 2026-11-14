@@ -40,6 +40,8 @@ enum class Number : std::uint64_t {
     Sync = 17,          // sync()
     SystemInfo = 18,    // sysinfo(info)
     ProcessInfo = 19,   // process_info(index, info)
+    Reboot = 20,        // reboot()
+    PowerOff = 21,      // poweroff()
 };
 
 // Architecture adapters fill arguments in the common syscall register order.
